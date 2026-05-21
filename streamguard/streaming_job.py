@@ -3,7 +3,9 @@
 Two streaming queries share one parsed Kafka stream. Query A
 aggregates per-(user, one-minute window) event counts to
 output/metrics/ in append mode. Query B archives the parsed events
-to output/events/ for the upcoming batch job to read.
+to output/events/ for the batch job to read. The spatial heatmap
+is computed in the batch job (see batch_job.py) so it can be
+filtered to user-selected time ranges.
 """
 
 from pyspark.sql import SparkSession
