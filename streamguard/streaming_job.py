@@ -85,7 +85,7 @@ def main():
         parsed.groupBy(window(col("event_time"), WINDOW_DURATION), col("user"))
         .agg(
             count(when(is_kd, 1)).alias("keystrokes"),
-            count(when(is_kd & (col("key") == " "), 1)).alias("words"),
+            count(when(is_kd & col("key").isin(" ", "Key.space"), 1)).alias("words"),
             count(
                 when(is_kd & col("key").isin("Key.backspace", "Key.delete"), 1)
             ).alias("corrections"),

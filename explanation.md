@@ -80,13 +80,18 @@ the same parsed stream.
 - **Query A - per-window counts.** Groups events into one-minute
   tumbling windows per user and aggregates four counts per window:
   `keystrokes` (events where `type == "key_down"`), `words`
-  (`key_down` events where `key == " "`), `corrections` (`key_down`
-  events where `key` is `Key.backspace` or `Key.delete`), and
-  `clicks` (events where `type == "click"`). Writes one row per
-  (user, window) to parquet at `output/metrics/`.
+  (`key_down` events where `key` is `" "` or `"Key.space"`),
+  `corrections` (`key_down` events where `key` is `Key.backspace`
+  or `Key.delete`), and `clicks` (events where `type == "click"`).
+  Writes one row per (user, window) to parquet at `output/metrics/`.
 - **Query B - raw event archive.** Writes the parsed events with no
   aggregation to parquet at `output/events/`. This is the durable,
   query-friendly archive that the upcoming batch job will read.
+
+The `words` filter accepts both `" "` and `"Key.space"` because
+pynput on macOS reports the space bar as the special key
+`Key.space` rather than the literal space character. Matching only
+on `" "` would leave the count stuck at zero.
 
 Each query has its own checkpoint directory under
 `output/checkpoint/`. After both queries are started, the
