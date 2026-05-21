@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Job output
+output/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store

@@ -72,24 +72,32 @@ for streaming systems for three reasons:
 
 ### What it does
 
-The streaming job consumes the `events.raw` topic, treats the JSON
-payloads as structured rows, and writes per-(user, one-minute window)
-metric rows to parquet on disk.
+The streaming job consumes the `events.raw` topic, parses each
+payload into typed columns with a 30-second watermark on event time,
+and then splits into two independent streaming queries that share
+the same parsed stream.
 
-Pipeline:
+- **Query A - per-window counts.** Groups events into one-minute
+  tumbling windows per user and aggregates four counts per window:
+  `keystrokes` (events where `type == "key_down"`), `words`
+  (`key_down` events where `key == " "`), `corrections` (`key_down`
+  events where `key` is `Key.backspace` or `Key.delete`), and
+  `clicks` (events where `type == "click"`). Writes one row per
+  (user, window) to parquet at `output/metrics/`.
+- **Query B - raw event archive.** Writes the parsed events with no
+  aggregation to parquet at `output/events/`. This is the durable,
+  query-friendly archive that the upcoming batch job will read.
 
-1. Subscribe to the Kafka topic as a streaming source.
-2. Decode the Kafka value bytes as a UTF-8 string and parse it as
-   JSON against an explicit schema.
-3. Turn the `ts` field (epoch seconds) into a proper Spark timestamp.
-4. Declare a 30-second watermark on that timestamp.
-5. Hand each micro-batch to a `foreachBatch` handler.
-6. In the handler, group events into one-minute tumbling windows per
-   user and compute six per-window metrics (the four event counts
-   plus the two order-dependent rhythm metrics described in the next
-   section).
-7. Append the combined rows to parquet, with a checkpoint directory
-   beside it.
+Each query has its own checkpoint directory under
+`output/checkpoint/`. After both queries are started, the
+application blocks on `spark.streams.awaitAnyTermination()`, which
+returns as soon as either query stops.
+
+The two order-dependent rhythm metrics (`flight_time_std` and
+`long_pause_count`) are no longer computed here; they will be
+produced by an upcoming batch job that reads `output/events/`,
+where `lag` has full visibility into the event ordering and is
+exactly correct.
 
 ### The Big Data concepts
 
@@ -117,11 +125,10 @@ user's machine (event time, our `ts` column). Our windows are
 defined on event time, which is the right choice for behaviour
 metrics: a "typing minute" is one minute of real keyboard activity,
 not one minute of Spark processing. Late and out-of-order events
-are normal in streaming, so we set a watermark of 30 seconds. This
-tells Spark: after 30 seconds past a window's end, assume no more
-late events will arrive for that window and free its state from
-memory. Without a watermark, Spark would have to keep every open
-window in state forever.
+are normal in streaming, so we set a watermark of 30 seconds. Spark
+uses the watermark to decide when a window can be finalised and its
+state freed: after 30 seconds past the window's end, any further
+late events for that window are dropped.
 
 **Tumbling windows.** A tumbling window is a fixed-width,
 non-overlapping window. `window(event_time, "1 minute")` buckets
@@ -129,116 +136,71 @@ each event into exactly one one-minute window. Grouping by
 `(window, user)` makes each window per user its own aggregation
 cell, and Spark counts matching events within it.
 
-**Parquet output with checkpointing.** The job writes its output
-rows as parquet, the columnar format that is the de-facto standard
-for analytics-friendly storage. The checkpoint location is required
-for any streaming query: Spark stores the Kafka offsets it has
-consumed there. If the job is restarted, it resumes from the last
-committed offsets with no skipped events. The actual write happens
-inside the `foreachBatch` handler described in the next section.
+**Append output mode.** Structured Streaming offers three output
+modes: `complete` (re-emit the full result table every batch),
+`update` (emit only rows that changed), and `append` (emit each row
+exactly once, when it is finalised). The parquet file sink only
+supports `append`. Append on a windowed aggregation is only allowed
+when there is a watermark, because without one Spark can never tell
+that a window's count is final and could keep emitting revised
+versions of the same row forever. With our 30-second watermark,
+Spark waits until the watermark has passed each window's end, then
+emits that window's row once and discards its state. That is why
+each (user, one-minute window) appears in `output/metrics/` exactly
+once.
+
+**Multiple streaming queries in one application.** A single
+`SparkSession` can run any number of `writeStream` queries
+concurrently. Each `.start()` returns a `StreamingQuery` handle
+that runs independently, with its own micro-batch trigger and its
+own checkpoint directory. `spark.streams.awaitAnyTermination()`
+blocks the main thread until any one of the running queries
+terminates, whether cleanly or due to an error. We use it to keep
+the application alive while both queries run.
+
+**Raw event archive as batch input.** Query B writes the parsed
+events to parquet with no transformation. That gives the future
+batch job a complete, ordered, time-bounded record of every event.
+Because the batch job operates on a bounded DataFrame, it can apply
+a `lag` window function over the full event ordering with no
+batch-boundary blind spots, so flight-time gaps can be computed
+exactly. The streaming job's responsibility ends at "land every
+event durably and produce the simple counts"; anything that needs
+ordering across the whole session is the batch job's responsibility.
+
+**Parquet file sink with checkpointing.** Both queries use the
+built-in parquet file sink, the columnar format that is the
+de-facto standard for analytics storage. For each query, Spark
+records in its checkpoint directory the Kafka offsets it has
+consumed and, for Query A, the state of any open windowed
+aggregations. On restart, each query resumes from its last
+committed point. The parquet file sink commits each batch
+atomically via a `_spark_metadata` log, so the output is end-to-end
+exactly-once.
 
 ### Where it lives
 
-- `streamguard/streaming_job.py` lines 28-40: hardcoded constants,
-  including the Kafka connector package coordinate (line 33) which
-  must match the installed pyspark version exactly.
-- Lines 43-51: `SparkSession` in `local[*]` mode, with the
+- `streamguard/streaming_job.py` lines 19-32: hardcoded constants,
+  including the Kafka connector package coordinate (line 24) which
+  must match the installed pyspark version exactly, and the two
+  output and two checkpoint paths (lines 26-29).
+- Lines 35-43: `SparkSession` in `local[*]` mode, with the
   `spark-sql-kafka-0-10` connector requested through
   `spark.jars.packages`.
-- Lines 54-67: the explicit JSON schema (`type`, `key`, `x`, `y`,
+- Lines 46-59: the explicit JSON schema (`type`, `key`, `x`, `y`,
   `button`, `pressed`, `dx`, `dy`, `user`, `ts`).
-- Lines 128-135: the Kafka `readStream` source.
-- Lines 137-143: JSON parse, `ts` to timestamp conversion, and the
-  30-second watermark declaration.
-- Lines 77-87: the one-minute tumbling window grouped by user, and
-  the four count aggregations (inside `process_batch`).
-- Lines 145-151: the `writeStream` that hands each micro-batch to
-  `process_batch` via `foreachBatch`, with `checkpointLocation`
-  pointing at the checkpoint directory.
-
-## Order-dependent metrics
-
-### What it does
-
-The first four metrics (keystrokes, words, corrections, clicks)
-evaluate each event on its own: count the events that match a
-condition. The two new metrics need to know the gap in time between
-consecutive `key_down` events:
-
-- `flight_time_std`: standard deviation of those gaps within a
-  window. A steady typist has a small standard deviation; a bursty
-  typist has a large one.
-- `long_pause_count`: how many of those gaps were longer than two
-  seconds within a window. A rough flow indicator - more long pauses
-  means more thinking or searching, less continuous typing.
-
-Both metrics require ordering the events by time and looking at
-adjacent pairs, which a plain `groupBy` cannot express.
-
-### The Big Data concepts
-
-**SQL window functions and `lag`.** A SQL window function computes a
-value for each row by looking at a set of other rows defined by a
-window specification - a `PARTITION BY` clause to group rows, plus
-an `ORDER BY` clause to order them within the group. Unlike
-`groupBy + agg`, the result still has one output row per input row,
-with an extra column derived from the partition's ordering.
-`lag(col)` is the simplest window function: it reads the value of
-`col` from the row immediately before the current one in the
-partition's order, or `null` if there is no such row. In our code:
-
-```
-user_order = Window.partitionBy("user").orderBy("ts")
-gap = col("ts") - lag("ts").over(user_order)
-```
-
-For each `key_down` event, `gap` becomes the number of seconds
-since the previous `key_down` event for the same user. The first
-event in each partition gets a `null` gap, which Spark's aggregate
-functions (`stddev`, `count`) ignore automatically. `stddev` over
-the `gap` column then gives the standard deviation of flight times
-within the window, and a conditional `count` gives the number of
-gaps over the long-pause threshold.
-
-**Why `foreachBatch`.** Structured Streaming's incremental
-windowed aggregation does not allow `lag` (or any SQL window
-function) on the unbounded stream directly: `lag` needs a
-deterministic global ordering, which an open-ended stream cannot
-provide. `foreachBatch` is the escape hatch. Each micro-batch is
-delivered to a user-defined function as an ordinary bounded
-DataFrame, on which the full set of Spark SQL operations is
-available - including window functions. Our `process_batch`
-function uses `lag` and standard aggregation to compute all six
-metrics on the batch, then writes the resulting rows to parquet
-itself.
-
-**Honest limitation: lag across micro-batch boundaries.** The `lag`
-function only sees rows present in the current micro-batch. If a
-`key_down` event lands at the start of one batch and the previous
-`key_down` event landed at the end of the previous batch, the gap
-between them is not computed - the first event of the batch gets a
-`null` gap, the same as the very first event of a session. So a
-small number of flight-time samples are missed at every batch
-boundary, and the standard deviation and long-pause count are
-slightly biased downward. Fixing this correctly would require
-carrying the last-seen `ts` per user across batches in user-managed
-state, which is more machinery than this demo needs.
-
-### Where it lives
-
-- `streamguard/streaming_job.py` line 40: the
-  `LONG_PAUSE_SECONDS = 2.0` threshold.
-- Lines 70-121: the `process_batch` function used by `foreachBatch`.
-- Lines 77-87: the four count aggregations on the batch.
-- Line 93: the `Window.partitionBy("user").orderBy("ts")`
-  specification.
-- Line 96: the `gap = ts - lag(ts)` calculation.
-- Lines 97-101: the second `groupBy` over the same one-minute
-  tumbling window that aggregates `gap` into `flight_time_std` and
-  `long_pause_count`.
-- Lines 104-117: the left join that combines counts and rhythm into
-  the six-metric output row, projected to flat
-  `(window_start, window_end, user, ...)` columns.
-- Line 119: the per-batch parquet append.
-- Line 147: the `.foreachBatch(process_batch)` call on the
-  `writeStream` that wires the handler in.
+- Lines 66-73: the Kafka `readStream` source.
+- Lines 75-81: JSON parse, `ts` to timestamp conversion, and the
+  30-second watermark declaration. This `parsed` DataFrame is the
+  shared input to both queries.
+- Lines 83-103: Query A's windowed aggregation: one-minute tumbling
+  windows grouped by user, four count aggregations, and the flat
+  output projection.
+- Lines 105-112: Query A's parquet `writeStream` to
+  `output/metrics/` in append mode, with its own checkpoint
+  directory.
+- Lines 114-121: Query B's parquet `writeStream` over the raw
+  parsed events to `output/events/` in append mode, with its own
+  checkpoint directory.
+- Line 123: `spark.streams.awaitAnyTermination()` keeps the
+  application alive while both queries run.
