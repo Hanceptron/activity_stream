@@ -7,16 +7,20 @@ import { Heatmap } from "./components/Heatmap";
 import { HotspotsLeaderboard } from "./components/HotspotsLeaderboard";
 import { InputMixIndicator } from "./components/InputMixIndicator";
 import { RangeSelector } from "./components/RangeSelector";
+import { RhythmPanel } from "./components/RhythmPanel";
 import { SessionsList } from "./components/SessionsList";
+import { StalenessChip } from "./components/StalenessChip";
 import { usePolling } from "./usePolling";
 import { filterByUser, parseUtc } from "./utils";
 
 // Top-level wiring. Polling intervals match how often each
 // upstream output changes:
 // - metrics: 5 s (streaming job emits a new window every minute).
-// - sessions, baseline, heatmap: 30 s. These three come from the
-//   batch job and only change when the batch job runs, so polling
-//   any faster would just resend the same payload.
+// - sessions, baseline, heatmap, batch_status: 30 s. These four
+//   come from the batch job (or its scheduler state) and only
+//   change when the batch job runs, so polling any faster would
+//   just resend the same payload. The scheduler runs every 5 min
+//   inside the API process; see streamguard/api.py.
 //
 // Multi-user filtering: every endpoint includes a `user` field.
 // The dashboard scopes every panel to a single user. `selectedUser`
@@ -33,6 +37,10 @@ export default function App() {
   const sessions = usePolling("/api/sessions", 30_000);
   const heatmap = usePolling(`/api/heatmap?range=${range}`, 30_000);
   const baseline = usePolling("/api/baseline", 5 * 60_000);
+  const batchStatus = usePolling("/api/batch_status", 30_000);
+
+  const lastBatchRun = batchStatus?.last_run ?? null;
+  const batchStatusName = batchStatus?.status ?? "idle";
 
   // Derived user list from the metrics stream. null while metrics
   // is null so UserSelector can stay hidden until first fetch.
@@ -81,6 +89,7 @@ export default function App() {
         />
         <TodayTotals sessions={sessionsForUser} />
         <MetricCards metrics={metricsForUser} baseline={baselineForUser} />
+        <RhythmPanel metrics={metricsForUser} baseline={baselineForUser} />
         <InputMixIndicator
           latest={
             metricsForUser && metricsForUser.length > 0
@@ -90,17 +99,28 @@ export default function App() {
         />
         <ActivityPanel metrics={metricsForUser} />
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm text-zinc-400">Spatial heatmaps</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-baseline gap-3">
+              <h2 className="text-sm text-zinc-400">Spatial heatmaps</h2>
+              <StalenessChip lastRunIso={lastBatchRun} status={batchStatusName} />
+            </div>
             <RangeSelector value={range} onChange={setRange} />
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Heatmap data={heatmapForUser} type="move" title="Movement" color="#3b82f6" />
             <Heatmap data={heatmapForUser} type="click" title="Clicks" color="#ef4444" />
           </div>
-          <HotspotsLeaderboard heatmap={heatmapForUser} />
+          <HotspotsLeaderboard
+            heatmap={heatmapForUser}
+            lastRunIso={lastBatchRun}
+            status={batchStatusName}
+          />
         </section>
-        <SessionsList sessions={sessionsForUser} />
+        <SessionsList
+          sessions={sessionsForUser}
+          lastRunIso={lastBatchRun}
+          status={batchStatusName}
+        />
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { parseUtc } from "../utils";
 import { SessionFatigueSparkline } from "./SessionFatigueSparkline";
+import { StalenessChip } from "./StalenessChip";
 
 // Most-recent-first session table.
 //
@@ -11,13 +12,20 @@ import { SessionFatigueSparkline } from "./SessionFatigueSparkline";
 // Scale column: a 60-px mini SVG bar showing fatigue clamped to
 // [-1, +1] with a zero-line marker so the user can rank rows at a
 // glance, not just read the number.
-export function SessionsList({ sessions }) {
+//
+// StalenessChip in the header reports when the batch job last
+// computed these sessions; the SessionFatigueSparkline on the right
+// is a different signal (trend across recent reliable sessions).
+export function SessionsList({ sessions, lastRunIso, status }) {
   const rows = (sessions || []).slice(0, 20);
 
   return (
     <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
       <div className="flex items-center justify-between mb-3 gap-3">
-        <h2 className="text-sm text-zinc-400">Recent sessions</h2>
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-sm text-zinc-400">Recent sessions</h2>
+          <StalenessChip lastRunIso={lastRunIso} status={status} />
+        </div>
         <SessionFatigueSparkline sessions={sessions} />
       </div>
       <div className="max-h-96 overflow-y-auto">
@@ -57,7 +65,12 @@ export function SessionsList({ sessions }) {
 }
 
 function FatigueCell({ s }) {
-  if (!s.fatigue_reliable) {
+  // Defensive null check on fatigue_index in addition to the
+  // fatigue_reliable flag. The batch job is supposed to set
+  // fatigue_reliable=False when any slope (and therefore the index)
+  // is null, but treating the index as null-safe here means a
+  // future regression in that contract can't crash the table.
+  if (!s.fatigue_reliable || s.fatigue_index == null) {
     return (
       <span className="text-zinc-500" aria-label="fatigue: insufficient data">
         – insufficient data
@@ -79,7 +92,9 @@ function FatigueCell({ s }) {
 }
 
 function FatigueScale({ s }) {
-  if (!s.fatigue_reliable) return <div aria-hidden="true" />;
+  if (!s.fatigue_reliable || s.fatigue_index == null) {
+    return <div aria-hidden="true" />;
+  }
 
   // Clamp to [-1, +1] and map to a horizontal position. The track
   // is 60 px wide with a 1 px tick at the centered zero line.

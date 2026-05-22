@@ -1,4 +1,5 @@
 import { pickHotspots } from "../utils";
+import { StalenessChip } from "./StalenessChip";
 
 // Top-5 click cells from the current heatmap range. Reuses the
 // already user-filtered heatmap payload so the RangeSelector above
@@ -8,13 +9,20 @@ import { pickHotspots } from "../utils";
 // The bar in the right column is each cell's count relative to the
 // top hotspot, giving a quick read on whether one location
 // dominates or the activity is spread out.
-export function HotspotsLeaderboard({ heatmap }) {
+//
+// StalenessChip in the header shows how long ago the batch job
+// last computed the underlying heatmap. The auto-scheduler in
+// streamguard/api.py refreshes every 5 min by default.
+export function HotspotsLeaderboard({ heatmap, lastRunIso, status }) {
   const top = pickHotspots(heatmap, "click", 5);
   const topCount = top.length > 0 ? top[0].count ?? 0 : 0;
 
   return (
     <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
-      <h2 className="text-sm text-zinc-400 mb-3">Click hotspots</h2>
+      <div className="flex items-baseline justify-between mb-3 gap-3">
+        <h2 className="text-sm text-zinc-400">Click hotspots</h2>
+        <StalenessChip lastRunIso={lastRunIso} status={status} />
+      </div>
       {top.length === 0 ? (
         <div className="text-xs text-zinc-500">
           no clicks recorded in this range

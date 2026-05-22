@@ -21,6 +21,19 @@ HEATMAPS_PATH = "output/heatmaps"
 WINDOW_SIZE = "1 minute"
 SESSION_GAP_SECONDS = 5 * 60
 PAUSE_THRESHOLD_SECONDS = 2.0
+
+# Activity floor for rhythm. A minute with fewer than this many
+# key_down events is too sparse to produce a meaningful
+# flight_time_std or long_pause_count - a couple of keystrokes
+# scattered across a minute have one big gap that dominates both
+# statistics. Sparse minutes still appear in the per_window output
+# with their count columns; the two rhythm columns are nulled out
+# (see per_window_metrics). user_baseline and session_summary then
+# automatically aggregate "active minutes only" because Spark's
+# mean / stddev / regr_slope skip nulls. Mirrors
+# MIN_KEYSTROKES_FOR_RHYTHM in streaming_job.py.
+MIN_KEYSTROKES_FOR_RHYTHM = 20
+
 MIN_WINDOWS_FOR_FATIGUE = 5
 
 CELL_SIZE = 40
@@ -78,12 +91,19 @@ def per_window_metrics(events):
         .drop("_prev_ts", "_new_session")
     )
 
+    # Materialize the per-minute window once and reuse it for the
+    # counts groupBy, the rhythm lag's partitionBy, and the rhythm
+    # groupBy. F.window is deterministic — calling it three times
+    # would produce identical structs — but pinning the column up
+    # front keeps the three downstream uses provably consistent and
+    # is what allows the lag below to be partitioned by the same
+    # window value the rhythm aggregation groups on.
+    events_w = events_s.withColumn(
+        "time_window", F.window(F.col("event_time"), WINDOW_SIZE)
+    )
+
     counts = (
-        events_s.groupBy(
-            F.col("session_id"),
-            F.window(F.col("event_time"), WINDOW_SIZE).alias("time_window"),
-            F.col("user"),
-        )
+        events_w.groupBy("session_id", "time_window", "user")
         .agg(
             F.count(F.when(is_kd, 1)).alias("keystrokes"),
             F.count(
@@ -96,26 +116,33 @@ def per_window_metrics(events):
         )
     )
 
-    # lag over key_down events partitioned by user and ordered by
-    # event_time gives the previous keystroke's time. Subtracting
-    # yields the gap in seconds for every keystroke except the first
-    # one per user. The first per-user keystroke gets a null gap,
-    # which stddev and conditional count both ignore.
+    # Window-local lag. Partitioning by (user, time_window) means
+    # the previous-event lookup only crosses keystrokes inside the
+    # same minute — the first key_down of every minute gets a null
+    # gap, matching the streaming UDF's per-window semantics.
+    #
+    # Why this matters: the previous partitioning (just by user)
+    # let the first key_down of a freshly-resumed session take its
+    # gap from the LAST key_down of the previous session, which
+    # could be hours earlier. That single inter-session gap then
+    # poisoned the minute's flight_time_std (max observed ~7900 s
+    # for a 49-keystroke minute) and inflated its long_pause_count
+    # by one. With window-local lag, idle gaps that span window
+    # boundaries vanish from the per-minute stats — which is the
+    # correct semantics for "how steady was the typing inside this
+    # one minute."
+    window_user_order = Window.partitionBy("user", "time_window").orderBy("event_time")
     key_events_with_gap = (
-        events_s.filter(is_kd)
+        events_w.filter(is_kd)
         .withColumn(
             "gap_seconds",
             F.col("event_time").cast("double")
-            - F.lag("event_time").over(user_order).cast("double"),
+            - F.lag("event_time").over(window_user_order).cast("double"),
         )
     )
 
     rhythm = (
-        key_events_with_gap.groupBy(
-            F.col("session_id"),
-            F.window(F.col("event_time"), WINDOW_SIZE).alias("time_window"),
-            F.col("user"),
-        )
+        key_events_with_gap.groupBy("session_id", "time_window", "user")
         .agg(
             F.stddev(F.col("gap_seconds")).alias("flight_time_std"),
             F.count(
@@ -124,7 +151,30 @@ def per_window_metrics(events):
         )
     )
 
-    return counts.join(rhythm, on=["session_id", "time_window", "user"], how="left")
+    # Null out the rhythm columns on minutes that don't clear the
+    # activity floor. The count columns are kept as-is so sparse
+    # minutes still show up with their keystrokes/words/clicks
+    # contributions. Spark's downstream aggregates (mean, stddev,
+    # regr_slope) skip nulls, so user_baseline and session_summary
+    # automatically compute "active minutes only" rhythm without
+    # any other code changes.
+    return (
+        counts.join(rhythm, on=["session_id", "time_window", "user"], how="left")
+        .withColumn(
+            "flight_time_std",
+            F.when(
+                F.col("keystrokes") >= MIN_KEYSTROKES_FOR_RHYTHM,
+                F.col("flight_time_std"),
+            ),
+        )
+        .withColumn(
+            "long_pause_count",
+            F.when(
+                F.col("keystrokes") >= MIN_KEYSTROKES_FOR_RHYTHM,
+                F.col("long_pause_count"),
+            ),
+        )
+    )
 
 
 def session_summary(per_window):
@@ -167,8 +217,17 @@ def session_summary(per_window):
             + F.col("pause_slope"),
         )
         .withColumn(
+            # fatigue_index is null when any of the four slopes is
+            # null (Spark addition propagates null). After the N=20
+            # threshold, a session whose active minutes are all
+            # sparse can have null rhythm_slope and pause_slope even
+            # though window_count >= MIN_WINDOWS_FOR_FATIGUE. We
+            # therefore also require fatigue_index itself to be
+            # non-null so the frontend can use this single flag as a
+            # safe "the number below is renderable" guard.
             "fatigue_reliable",
-            F.col("window_count") >= MIN_WINDOWS_FOR_FATIGUE,
+            (F.col("window_count") >= MIN_WINDOWS_FOR_FATIGUE)
+            & F.col("fatigue_index").isNotNull(),
         )
     )
 
@@ -213,27 +272,47 @@ def heatmap_for_range(events, hours, max_event_time):
     )
 
 
+def compute_all(spark):
+    """Run one batch pass over the event archive: read events,
+    compute per-session summaries, the per-user baseline, and a
+    spatial heatmap for each preset range. Overwrites the output
+    directories in place. Safe to call repeatedly on the same
+    long-lived spark session.
+
+    Called both from the CLI ``main()`` below and from the API's
+    in-process scheduler in ``api.py``. The ``unpersist()`` calls in
+    the ``finally`` blocks matter for the scheduled case — without
+    them, cached DataFrames pile up in Spark memory across runs.
+    """
+    events = spark.read.parquet(EVENTS_PATH).cache()
+    try:
+        per_window = per_window_metrics(events).cache()
+        try:
+            session_summary(per_window).write.mode("overwrite").parquet(SESSIONS_PATH)
+            user_baseline(per_window).write.mode("overwrite").parquet(BASELINE_PATH)
+
+            # One spatial heatmap per preset time range.
+            max_event_time = events.agg(F.max("event_time").alias("m")).first()["m"]
+            if max_event_time is not None:
+                for name, hours in HEATMAP_PRESETS:
+                    (
+                        heatmap_for_range(events, hours, max_event_time)
+                        .write.mode("overwrite")
+                        .parquet(f"{HEATMAPS_PATH}/{name}")
+                    )
+        finally:
+            per_window.unpersist()
+    finally:
+        events.unpersist()
+
+
 def main():
     spark = build_session()
     spark.sparkContext.setLogLevel("WARN")
-
-    events = spark.read.parquet(EVENTS_PATH).cache()
-    per_window = per_window_metrics(events).cache()
-
-    session_summary(per_window).write.mode("overwrite").parquet(SESSIONS_PATH)
-    user_baseline(per_window).write.mode("overwrite").parquet(BASELINE_PATH)
-
-    # One spatial heatmap per preset time range.
-    max_event_time = events.agg(F.max("event_time").alias("m")).first()["m"]
-    if max_event_time is not None:
-        for name, hours in HEATMAP_PRESETS:
-            (
-                heatmap_for_range(events, hours, max_event_time)
-                .write.mode("overwrite")
-                .parquet(f"{HEATMAPS_PATH}/{name}")
-            )
-
-    spark.stop()
+    try:
+        compute_all(spark)
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":

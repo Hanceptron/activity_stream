@@ -1,4 +1,4 @@
-import { parseUtc } from "../utils";
+import { formatStaleness, parseUtc } from "../utils";
 
 // Daily summary card aggregating sessions whose start falls within
 // today's local-time boundary. Reuses the existing /api/sessions
@@ -78,23 +78,4 @@ export function TodayTotals({ sessions }) {
       </div>
     </div>
   );
-}
-
-// Render the newest session_end as a relative duration. Once the
-// gap exceeds 30 minutes we append a hint that the batch job is
-// likely overdue, because /api/sessions only refreshes on a batch
-// run.
-function formatStaleness(end) {
-  if (!end) return null;
-  const ageMs = Date.now() - end.getTime();
-  const ageMin = Math.round(ageMs / 60000);
-
-  let text;
-  if (ageMin < 1) text = "as of just now";
-  else if (ageMin < 60) text = `as of ${ageMin} min ago`;
-  else if (ageMin < 60 * 24) text = `as of ${Math.round(ageMin / 60)} h ago`;
-  else text = `as of ${Math.round(ageMin / (60 * 24))} d ago`;
-
-  if (ageMin > 30) text += " (batch job pending)";
-  return text;
 }

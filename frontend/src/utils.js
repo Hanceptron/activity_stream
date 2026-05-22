@@ -92,6 +92,47 @@ export function correctionRatio(window) {
   return (window.corrections ?? 0) / Math.max(window.keystrokes ?? 0, 1);
 }
 
+// Median of the non-null `flight_time_std` values across the
+// supplied metrics window. Used by the RhythmPanel headline.
+// Median (not mean) because the per-minute std is heavy-tailed: a
+// minute with two quick keys and one straggler 30 seconds later
+// produces a flight_time_std of ~15s, which would dominate any
+// mean even when most active minutes are well-behaved. The median
+// picks the typical minute and ignores those outliers.
+// Returns null when every minute in the window has a null
+// `flight_time_std` (i.e., fewer than 3 keystrokes in each).
+export function medianFlightTimeStd(metrics) {
+  if (!metrics) return null;
+  const vals = metrics
+    .map((m) => m?.flight_time_std)
+    .filter((v) => v != null && !Number.isNaN(v))
+    .sort((a, b) => a - b);
+  if (vals.length === 0) return null;
+  const mid = Math.floor(vals.length / 2);
+  return vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
+}
+
+// Sum of `long_pause_count` across the supplied metrics window.
+// Used by the RhythmPanel headline. Sum (not mean) because the
+// count is naturally additive: "12 long pauses over the last hour"
+// reads exactly the way a user would describe it. Returns null
+// only when the metrics input is null/empty or every row has a
+// missing count; a window where every minute has 0 long pauses
+// correctly returns 0.
+export function totalLongPauses(metrics) {
+  if (!metrics) return null;
+  let sum = 0;
+  let any = false;
+  for (const m of metrics) {
+    const v = m?.long_pause_count;
+    if (v != null && !Number.isNaN(v)) {
+      sum += v;
+      any = true;
+    }
+  }
+  return any ? sum : null;
+}
+
 // Share of input that was mouse clicks vs keyboard keys for a
 // single window. Returns null when both are zero — the caller
 // (InputMixIndicator) treats that as "no input" rather than 0%.
@@ -156,6 +197,27 @@ export function getTodaysSessions(sessions, now = Date.now()) {
     const start = parseUtc(s.session_start);
     return start && start >= midnight;
   });
+}
+
+// Render a timestamp as a relative-time string like "as of 3 min
+// ago", "as of 2 h ago", "as of 4 d ago". Appends "(batch job
+// pending)" once the gap exceeds 30 minutes — used both for the
+// data-staleness chip in TodayTotals (newest session_end) and the
+// compute-staleness chips elsewhere (last batch_status.last_run).
+// Returns null when end is missing so the caller can skip rendering.
+export function formatStaleness(end, now = Date.now()) {
+  if (!end) return null;
+  const ageMs = now - end.getTime();
+  const ageMin = Math.round(ageMs / 60000);
+
+  let text;
+  if (ageMin < 1) text = "as of just now";
+  else if (ageMin < 60) text = `as of ${ageMin} min ago`;
+  else if (ageMin < 60 * 24) text = `as of ${Math.round(ageMin / 60)} h ago`;
+  else text = `as of ${Math.round(ageMin / (60 * 24))} d ago`;
+
+  if (ageMin > 30) text += " (batch job pending)";
+  return text;
 }
 
 // Peak keystrokes-per-minute observed today across the supplied
