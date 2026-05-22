@@ -48,31 +48,64 @@ export function filterByUser(rows, user) {
   return rows.filter((r) => r && r.user === user);
 }
 
-// Take the existing /api/metrics rows (which only exist for minutes
-// with activity) and produce exactly `minutes` objects, one per
-// UTC-minute over the trailing window ending at `now`. Buckets are
-// keyed by floor(time / 60_000) so a row falls into whichever
-// minute its window_start belongs to. Missing buckets become zero-
-// valued synthetic rows, which is what callers need to render an
-// idle gap as flat-zero rather than as a connected line.
-export function zeroFillWindows(metrics, minutes = 60, now = Date.now()) {
-  const byBucket = new Map();
+// Range presets shared by the activity gauge, idle strip, and
+// metrics chart. Each entry specifies how many buckets to render
+// and how wide each bucket is in minutes; total minutes covered =
+// bucketCount * bucketSizeMin. Bucket counts are tuned to keep the
+// strip and chart readable (60-100 cells) regardless of range.
+// pollMs scales with range: short windows poll fast for freshness,
+// long windows poll slowly to keep payloads under control.
+export const ACTIVITY_RANGES = {
+  "1h": { bucketCount: 60, bucketSizeMin: 1,   label: "Last 60 minutes", pollMs: 5_000 },
+  "6h": { bucketCount: 72, bucketSizeMin: 5,   label: "Last 6 hours",    pollMs: 15_000 },
+  "1d": { bucketCount: 96, bucketSizeMin: 15,  label: "Last 24 hours",   pollMs: 30_000 },
+  "3d": { bucketCount: 72, bucketSizeMin: 60,  label: "Last 3 days",     pollMs: 60_000 },
+  "1w": { bucketCount: 84, bucketSizeMin: 120, label: "Last 7 days",     pollMs: 60_000 },
+};
+
+// Aggregate per-minute /api/metrics rows into `bucketCount` fixed-
+// width buckets ending at `now`. Each bucket sums the count
+// columns across the per-minute rows that fall within it; missing
+// buckets become zero-valued synthetic rows so callers can render
+// idle stretches as flat zero rather than connecting across gaps.
+// Buckets are keyed by floor(time / bucketMs) so a per-minute row
+// snaps into whichever bucket its window_start belongs to.
+export function bucketizeWindows(metrics, bucketCount, bucketSizeMin, now = Date.now()) {
+  const bucketMs = bucketSizeMin * 60_000;
+  const nowBucket = Math.floor(now / bucketMs);
+  const startBucket = nowBucket - bucketCount + 1;
+
+  const sums = new Map();
   for (const m of metrics || []) {
     const t = parseUtc(m.window_start);
     if (!t) continue;
-    byBucket.set(Math.floor(t.getTime() / 60000), m);
+    const b = Math.floor(t.getTime() / bucketMs);
+    if (b < startBucket || b > nowBucket) continue;
+    const cur = sums.get(b);
+    if (cur) {
+      cur.keystrokes += m.keystrokes ?? 0;
+      cur.words += m.words ?? 0;
+      cur.corrections += m.corrections ?? 0;
+      cur.clicks += m.clicks ?? 0;
+    } else {
+      sums.set(b, {
+        keystrokes: m.keystrokes ?? 0,
+        words: m.words ?? 0,
+        corrections: m.corrections ?? 0,
+        clicks: m.clicks ?? 0,
+      });
+    }
   }
 
-  const nowMinute = Math.floor(now / 60000);
   const result = [];
-  for (let i = minutes - 1; i >= 0; i--) {
-    const bucket = nowMinute - i;
-    const existing = byBucket.get(bucket);
-    if (existing) {
-      result.push(existing);
+  for (let b = startBucket; b <= nowBucket; b++) {
+    const window_start = new Date(b * bucketMs).toISOString();
+    const sum = sums.get(b);
+    if (sum) {
+      result.push({ window_start, ...sum });
     } else {
       result.push({
-        window_start: new Date(bucket * 60000).toISOString(),
+        window_start,
         keystrokes: 0,
         words: 0,
         corrections: 0,
@@ -84,53 +117,29 @@ export function zeroFillWindows(metrics, minutes = 60, now = Date.now()) {
   return result;
 }
 
+// Tick / tooltip label for a single bucket. When the total range
+// fits in a day the date is implied by "today" and showing only
+// HH:MM keeps the axis terse; once the range spans multiple days
+// the date is needed to disambiguate the same hour appearing
+// repeatedly.
+export function formatBucketTime(date, totalMinutes) {
+  if (!date) return "";
+  if (totalMinutes <= 1440) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleString([], {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+  });
+}
+
 // Corrections per keystroke for a single 1-minute window. Returns 0
 // (not NaN) when keystrokes is 0; using Math.max(_, 1) keeps the
 // expression branchless and safe.
 export function correctionRatio(window) {
   if (!window) return 0;
   return (window.corrections ?? 0) / Math.max(window.keystrokes ?? 0, 1);
-}
-
-// Median of the non-null `flight_time_std` values across the
-// supplied metrics window. Used by the RhythmPanel headline.
-// Median (not mean) because the per-minute std is heavy-tailed: a
-// minute with two quick keys and one straggler 30 seconds later
-// produces a flight_time_std of ~15s, which would dominate any
-// mean even when most active minutes are well-behaved. The median
-// picks the typical minute and ignores those outliers.
-// Returns null when every minute in the window has a null
-// `flight_time_std` (i.e., fewer than 3 keystrokes in each).
-export function medianFlightTimeStd(metrics) {
-  if (!metrics) return null;
-  const vals = metrics
-    .map((m) => m?.flight_time_std)
-    .filter((v) => v != null && !Number.isNaN(v))
-    .sort((a, b) => a - b);
-  if (vals.length === 0) return null;
-  const mid = Math.floor(vals.length / 2);
-  return vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
-}
-
-// Sum of `long_pause_count` across the supplied metrics window.
-// Used by the RhythmPanel headline. Sum (not mean) because the
-// count is naturally additive: "12 long pauses over the last hour"
-// reads exactly the way a user would describe it. Returns null
-// only when the metrics input is null/empty or every row has a
-// missing count; a window where every minute has 0 long pauses
-// correctly returns 0.
-export function totalLongPauses(metrics) {
-  if (!metrics) return null;
-  let sum = 0;
-  let any = false;
-  for (const m of metrics) {
-    const v = m?.long_pause_count;
-    if (v != null && !Number.isNaN(v)) {
-      sum += v;
-      any = true;
-    }
-  }
-  return any ? sum : null;
 }
 
 // Share of input that was mouse clicks vs keyboard keys for a

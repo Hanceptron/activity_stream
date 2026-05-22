@@ -7,11 +7,11 @@ import { Heatmap } from "./components/Heatmap";
 import { HotspotsLeaderboard } from "./components/HotspotsLeaderboard";
 import { InputMixIndicator } from "./components/InputMixIndicator";
 import { RangeSelector } from "./components/RangeSelector";
-import { RhythmPanel } from "./components/RhythmPanel";
+import { ActivityGauge } from "./components/ActivityGauge";
 import { SessionsList } from "./components/SessionsList";
 import { StalenessChip } from "./components/StalenessChip";
 import { usePolling } from "./usePolling";
-import { filterByUser, parseUtc } from "./utils";
+import { ACTIVITY_RANGES, filterByUser, parseUtc } from "./utils";
 
 // Top-level wiring. Polling intervals match how often each
 // upstream output changes:
@@ -31,9 +31,17 @@ import { filterByUser, parseUtc } from "./utils";
 // render avoids a setState-in-effect cascade.
 export default function App() {
   const [range, setRange] = useState("1h");
+  const [activityRange, setActivityRange] = useState("1h");
   const [selectedUser, setSelectedUser] = useState(null);
 
+  const activityCfg = ACTIVITY_RANGES[activityRange];
+  const activityMinutes = activityCfg.bucketCount * activityCfg.bucketSizeMin;
+
   const metrics = usePolling("/api/metrics", 5_000);
+  const activityMetrics = usePolling(
+    `/api/metrics?minutes=${activityMinutes}`,
+    activityCfg.pollMs,
+  );
   const sessions = usePolling("/api/sessions", 30_000);
   const heatmap = usePolling(`/api/heatmap?range=${range}`, 30_000);
   const baseline = usePolling("/api/baseline", 5 * 60_000);
@@ -70,6 +78,7 @@ export default function App() {
   }, [metrics, users, selectedUser]);
 
   const metricsForUser = filterByUser(metrics, effectiveUser);
+  const activityMetricsForUser = filterByUser(activityMetrics, effectiveUser);
   const sessionsForUser = filterByUser(sessions, effectiveUser);
   const heatmapForUser = filterByUser(heatmap, effectiveUser);
   const baselineForUser =
@@ -89,7 +98,14 @@ export default function App() {
         />
         <TodayTotals sessions={sessionsForUser} />
         <MetricCards metrics={metricsForUser} baseline={baselineForUser} />
-        <RhythmPanel metrics={metricsForUser} baseline={baselineForUser} />
+        <section className="space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-sm text-zinc-400">Activity</h2>
+            <RangeSelector value={activityRange} onChange={setActivityRange} />
+          </div>
+          <ActivityGauge metrics={activityMetricsForUser} range={activityRange} />
+          <ActivityPanel metrics={activityMetricsForUser} range={activityRange} />
+        </section>
         <InputMixIndicator
           latest={
             metricsForUser && metricsForUser.length > 0
@@ -97,7 +113,6 @@ export default function App() {
               : null
           }
         />
-        <ActivityPanel metrics={metricsForUser} />
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-baseline gap-3">

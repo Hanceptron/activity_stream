@@ -1,24 +1,22 @@
-import { parseUtc, zeroFillWindows } from "../utils";
+import { formatBucketTime, parseUtc } from "../utils";
 
-// Horizontal strip of 60 cells, one per minute over the last hour.
-// Green when any activity happened in that minute, dark gray when
-// the user was idle. Hovering a cell reveals the time + counts via
-// the native title attribute.
+// Horizontal strip of cells, one per bucket over the selected
+// range. Green when any activity happened in the bucket, dark
+// gray when the user was idle. Hovering a cell reveals the time
+// + counts via the native title attribute.
 //
 // flex-1 on each cell makes the strip exactly fill its container,
 // which is sized to match the chart below it in ActivityPanel —
-// so cell N visually corresponds to the same minute as the chart's
+// so cell N visually corresponds to the same bucket as the chart's
 // Nth x-axis tick.
-export function IdleStrip({ metrics }) {
-  const filled = zeroFillWindows(metrics, 60);
-
+export function IdleStrip({ buckets, totalMinutes }) {
   return (
     <div
       className="flex gap-px"
       role="img"
-      aria-label="Per-minute activity timeline for the last 60 minutes"
+      aria-label="Per-bucket activity timeline for the selected range"
     >
-      {filled.map((m, i) => {
+      {buckets.map((m, i) => {
         const totalActivity =
           (m.keystrokes ?? 0) +
           (m.words ?? 0) +
@@ -26,9 +24,7 @@ export function IdleStrip({ metrics }) {
           (m.clicks ?? 0);
         const active = totalActivity > 0;
         const time = parseUtc(m.window_start);
-        const timeStr = time
-          ? time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          : "";
+        const timeStr = time ? formatBucketTime(time, totalMinutes) : "";
         const counts = active
           ? `${m.keystrokes ?? 0} keys, ${m.clicks ?? 0} clicks`
           : "idle";
