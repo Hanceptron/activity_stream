@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -24,12 +25,19 @@ import { formatBucketTime, parseUtc } from "../utils";
 // parent ActivityPanel so the chart can sit directly beneath the
 // IdleStrip with no nested borders.
 export function MetricsChart({ buckets, totalMinutes }) {
-  const data = buckets.map((m) => ({
-    time: formatBucketTime(parseUtc(m.window_start), totalMinutes),
-    keystrokes: m.keystrokes,
-    words: m.words,
-    corrections: m.corrections,
-  }));
+  // useMemo so the array isn't rebuilt on unrelated parent renders.
+  // At 1w there are up to 168 buckets — the savings are small but
+  // real and the dependency list is honest.
+  const data = useMemo(
+    () =>
+      buckets.map((m) => ({
+        time: formatBucketTime(parseUtc(m.window_start), totalMinutes),
+        keystrokes: m.keystrokes,
+        words: m.words,
+        corrections: m.corrections,
+      })),
+    [buckets, totalMinutes],
+  );
 
   return (
     <ResponsiveContainer width="100%" height={280}>

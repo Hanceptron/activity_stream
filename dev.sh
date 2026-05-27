@@ -3,15 +3,15 @@
 #
 # Starts the backend (FastAPI on :8000, owns the batch scheduler
 # and a long-lived Spark session) and the frontend dev server (Vite
-# on :5173), each wrapped in `caffeinate` so macOS will not suspend
-# either process while you have the dashboard open. The backend is
-# additionally wrapped in a `while true` loop so that if its Spark
-# session dies (e.g. after a sleep/wake cycle), it auto-restarts
-# within 5 seconds without manual intervention.
+# on :5173). The backend is wrapped in a `while true` loop so that
+# if its Spark session dies (e.g. after a sleep/wake cycle), it
+# auto-restarts within 5 seconds without manual intervention.
 #
-# The recording agent and the Spark streaming job are NOT started
-# here - they live in their own terminals so their logs stay
-# readable, and they should be launched under `caffeinate` too.
+# The Mac is allowed to sleep and lock normally — no `caffeinate`
+# wrappers. The recording agent and streaming job (started by
+# `startup-tmux.sh`) each recover from sleep/wake on their own; the
+# agent re-creates its pynput listeners on macOS wake notifications,
+# and Spark's restart loop catches the RPC death.
 #
 # Ctrl+C cleans both children up.
 
@@ -32,7 +32,7 @@ trap cleanup INT TERM
 cd "$ROOT"
 
 echo "[backend]  http://localhost:8000   (FastAPI, auto-restart on death)"
-caffeinate -imsu bash -c '
+bash -c '
   while true; do
     uv run uvicorn streamguard.api:app --reload
     echo "[$(date)] backend exited, restarting in 5s..."
@@ -42,7 +42,7 @@ caffeinate -imsu bash -c '
 BACKEND_PID=$!
 
 echo "[frontend] http://localhost:5173   (Vite)"
-( cd "$ROOT/frontend" && caffeinate -imsu npm run dev ) &
+( cd "$ROOT/frontend" && npm run dev ) &
 FRONTEND_PID=$!
 
 echo

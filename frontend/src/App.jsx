@@ -37,7 +37,9 @@ export default function App() {
   const activityCfg = ACTIVITY_RANGES[activityRange];
   const activityMinutes = activityCfg.bucketCount * activityCfg.bucketSizeMin;
 
-  const metrics = usePolling("/api/metrics", 5_000);
+  // The 1h preset's poll interval is also the right cadence for the
+  // header/metric-card widgets that only ever read the newest minute.
+  const metrics = usePolling("/api/metrics", ACTIVITY_RANGES["1h"].pollMs);
   const activityMetrics = usePolling(
     `/api/metrics?minutes=${activityMinutes}`,
     activityCfg.pollMs,

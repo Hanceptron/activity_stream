@@ -1,4 +1,4 @@
-import { formatBucketTime, parseUtc } from "../utils";
+import { formatBucketTime, isActiveBucket, parseUtc } from "../utils";
 
 // Horizontal strip of cells, one per bucket over the selected
 // range. Green when any activity happened in the bucket, dark
@@ -17,12 +17,7 @@ export function IdleStrip({ buckets, totalMinutes }) {
       aria-label="Per-bucket activity timeline for the selected range"
     >
       {buckets.map((m, i) => {
-        const totalActivity =
-          (m.keystrokes ?? 0) +
-          (m.words ?? 0) +
-          (m.corrections ?? 0) +
-          (m.clicks ?? 0);
-        const active = totalActivity > 0;
+        const active = isActiveBucket(m);
         const time = parseUtc(m.window_start);
         const timeStr = time ? formatBucketTime(time, totalMinutes) : "";
         const counts = active

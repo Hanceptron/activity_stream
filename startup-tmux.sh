@@ -3,16 +3,14 @@
 #
 # Starts the four long-running processes (agent, streaming, backend,
 # frontend) inside a single detached tmux session named "streamguard",
-# each in its own window so logs stay separated. Every process is
-# wrapped in `caffeinate -imsu` to keep the system awake on AC power
-# without forcing the display on.
+# each in its own window so logs stay separated.
 #
-# Streaming and backend are wrapped in a `while true` loop so they
-# self-restart after a sleep/wake cycle or any other crash. The agent
-# is not - pynput's macOS event tap can go silent without the process
-# exiting, so a restart loop wouldn't catch it. If the dashboard's
-# live dot goes red while you're typing, attach to the session and
-# Ctrl+C / re-run the agent window manually.
+# The Mac is allowed to sleep and lock normally — no `caffeinate`
+# wrappers. Every process is wrapped in a `while true` restart loop
+# so a hard crash recovers within 5 seconds. The agent additionally
+# subscribes to macOS NSWorkspaceDidWakeNotification and re-creates
+# its pynput listeners on wake (pynput's event tap is killed by the
+# kernel during sleep); the loop is a safety net for harder failures.
 #
 # Usage:
 #   ./startup-tmux.sh                       # start everything detached
@@ -40,20 +38,35 @@ docker compose up -d >/dev/null || {
   exit 1
 }
 
+# Wait for the broker to actually accept connections before launching
+# the agent. On cold boot the container starts in milliseconds but
+# the broker needs a few seconds to listen on 9092; without this gate
+# the agent would silently buffer into a dead socket.
+echo "waiting for Kafka on localhost:9092..."
+deadline=$(( $(date +%s) + 60 ))
+until nc -z localhost 9092 2>/dev/null; do
+  if (( $(date +%s) > deadline )); then
+    echo "Kafka did not become reachable on localhost:9092 within 60s."
+    exit 1
+  fi
+  sleep 1
+done
+echo "Kafka is reachable."
+
 # Kill any previous session so this script is idempotent.
 tmux kill-session -t streamguard 2>/dev/null
 
 tmux new-session -d -s streamguard -n agent \
-  "caffeinate -imsu uv run python -m streamguard.agent --sink kafka"
+  "bash -c 'while true; do uv run python -m streamguard.agent --sink kafka; echo \"[\$(date)] agent exited, restarting in 5s...\"; sleep 5; done'"
 
 tmux new-window -t streamguard -n streaming \
-  "caffeinate -imsu bash -c 'while true; do uv run python -m streamguard.streaming_job; echo \"[\$(date)] streaming exited, restarting in 5s...\"; sleep 5; done'"
+  "bash -c 'while true; do uv run python -m streamguard.streaming_job; echo \"[\$(date)] streaming exited, restarting in 5s...\"; sleep 5; done'"
 
 tmux new-window -t streamguard -n backend \
-  "caffeinate -imsu bash -c 'while true; do uv run uvicorn streamguard.api:app --reload; echo \"[\$(date)] backend exited, restarting in 5s...\"; sleep 5; done'"
+  "bash -c 'while true; do uv run uvicorn streamguard.api:app --reload; echo \"[\$(date)] backend exited, restarting in 5s...\"; sleep 5; done'"
 
 tmux new-window -t streamguard -n frontend \
-  "cd $ROOT/frontend && caffeinate -imsu npm run dev"
+  "cd $ROOT/frontend && npm run dev"
 
 echo
 echo "StreamGuard started in detached tmux session 'streamguard'."

@@ -63,6 +63,20 @@ export const ACTIVITY_RANGES = {
   "1w": { bucketCount: 84, bucketSizeMin: 120, label: "Last 7 days",     pollMs: 60_000 },
 };
 
+// A bucket counts as "active" if any keystrokes, words,
+// corrections, or clicks were recorded. Shared between
+// ActivityGauge and IdleStrip so the two panels stay in sync.
+export function isActiveBucket(b) {
+  if (!b) return false;
+  return (
+    (b.keystrokes ?? 0) +
+      (b.words ?? 0) +
+      (b.corrections ?? 0) +
+      (b.clicks ?? 0) >
+    0
+  );
+}
+
 // Aggregate per-minute /api/metrics rows into `bucketCount` fixed-
 // width buckets ending at `now`. Each bucket sums the count
 // columns across the per-minute rows that fall within it; missing

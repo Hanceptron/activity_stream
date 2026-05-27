@@ -1,4 +1,4 @@
-import { formatStaleness, parseUtc } from "../utils";
+import { formatStaleness, getTodaysSessions, parseUtc } from "../utils";
 
 // Daily summary card aggregating sessions whose start falls within
 // today's local-time boundary. Reuses the existing /api/sessions
@@ -14,13 +14,10 @@ import { formatStaleness, parseUtc } from "../utils";
 // them in), so totals are per-user. To restore cross-user totals,
 // pass the unfiltered sessions array.
 export function TodayTotals({ sessions }) {
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-
-  const todays = (sessions || []).filter((s) => {
-    const start = parseUtc(s.session_start);
-    return start && start >= midnight;
-  });
+  // Reuses the shared helper so the midnight boundary is defined in
+  // one place (utils.js); Header's "today" chips and these totals
+  // stay consistent.
+  const todays = getTodaysSessions(sessions);
 
   const totals = todays.reduce(
     (acc, s) => {

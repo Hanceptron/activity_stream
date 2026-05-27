@@ -641,20 +641,22 @@ dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pynput" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyspark" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "apscheduler", specifier = ">=3.10" },
-    { name = "confluent-kafka", specifier = ">=2.14.0" },
-    { name = "fastapi", specifier = ">=0.136.1" },
-    { name = "pandas", specifier = ">=3.0.3" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
-    { name = "pynput", specifier = ">=1.8.2" },
-    { name = "pyspark", specifier = ">=4.1.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.47.0" },
+    { name = "apscheduler", specifier = ">=3.10,<4" },
+    { name = "confluent-kafka", specifier = ">=2.14.0,<3" },
+    { name = "fastapi", specifier = ">=0.136.1,<1" },
+    { name = "pandas", specifier = ">=3.0.3,<4" },
+    { name = "pyarrow", specifier = ">=24.0.0,<25" },
+    { name = "pynput", specifier = ">=1.8.2,<2" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.0" },
+    { name = "pyspark", specifier = ">=4.1.1,<5" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.47.0,<1" },
 ]
 
 [[package]]

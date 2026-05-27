@@ -2,6 +2,7 @@ services:
   kafka:
     image: apache/kafka:3.8.1
     container_name: streamguard-kafka
+    restart: unless-stopped
     ports:
       - "9092:9092"
     environment:
@@ -17,3 +18,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      # `kafka-broker-api-versions` is bundled with the image and
+      # returns quickly when the broker is listening. Used both by
+      # `docker compose` (so `up -d` knows when the broker is ready)
+      # and as a backup signal alongside startup-tmux.sh's nc check.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

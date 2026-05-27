@@ -36,9 +36,8 @@ export function Header({
 
   const latest =
     metrics && metrics.length > 0 ? metrics[metrics.length - 1] : null;
-  const ageMs = latest
-    ? now - parseUtc(latest.window_start).getTime()
-    : Infinity;
+  const latestTime = latest ? parseUtc(latest.window_start)?.getTime() : null;
+  const ageMs = latestTime != null ? now - latestTime : Infinity;
   const isLive = ageMs < 2 * 60 * 1000;
 
   const sessionMs = sessionTimer(metrics, 5 * 60 * 1000, now);

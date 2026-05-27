@@ -14,20 +14,22 @@ terminal needed.
   granting either permission for the first time.
 - `brew install tmux` if you want the recommended background-running mode.
 
-## Caffeinate flag choice
+## Sleep & screen lock
 
-Everywhere below the pipeline is wrapped in `caffeinate -imsu`:
+StreamGuard is sleep-friendly: the Mac is allowed to sleep and the
+screen is allowed to lock as usual (no `caffeinate` wrappers anywhere).
 
-| Flag | Effect |
-|---|---|
-| `-i` | Prevent idle sleep |
-| `-m` | Prevent disk sleep |
-| `-s` | Prevent system sleep on AC power |
-| `-u` | Declare user activity (resets idle timer) |
+- Walk away → screen locks per `System Settings → Lock Screen`.
+- Lid closed or system sleep → fine; the recorder picks up on wake.
+- On wake, the agent subscribes to macOS `NSWorkspaceDidWakeNotification`
+  and re-creates its pynput listeners automatically. Spark's RPC dies
+  on sleep, so the streaming job and backend both run inside a
+  `while true` restart loop that recovers within ~5 s.
+- If something hard-crashes anyway, each process (including the
+  agent) is wrapped in the same restart loop in `startup-tmux.sh`.
 
-We deliberately omit `-d` (prevent display sleep) so the screen is
-allowed to go dark during long unattended runs - the system stays awake,
-the screen does not. If you want the screen on too, add `-d` back.
+The dashboard's live dot is the at-a-glance smoke test: it should be
+green again within ~30 s of unlocking.
 
 ## Option A: tmux session (recommended for long recordings)
 
@@ -39,6 +41,10 @@ keep the processes running. Re-attach any time to check logs.
 ```sh
 ./startup-tmux.sh
 ```
+
+The script waits for Kafka to accept connections on `localhost:9092`
+before starting any of the four tmux windows, so the agent never races
+the broker on cold boot.
 
 Open <http://localhost:5173> in a browser.
 
@@ -73,24 +79,27 @@ docker compose up -d
 
 (Container detaches; this terminal is free.)
 
-### Terminal 2 - Recording agent
+### Terminal 2 - Recording agent (auto-restart loop)
 
 ```sh
-caffeinate -imsu uv run python -m streamguard.agent --sink kafka
+while true; do
+  uv run python -m streamguard.agent --sink kafka
+  echo "[$(date)] agent exited, restarting in 5s..."
+  sleep 5
+done
 ```
 
-Prints nothing while running normally.
+Prints a "listeners restarted after wake" line each time the Mac wakes
+from sleep; otherwise quiet.
 
 ### Terminal 3 - Spark streaming job (auto-restart loop)
 
 ```sh
-caffeinate -imsu bash -c '
-  while true; do
-    uv run python -m streamguard.streaming_job
-    echo "[$(date)] streaming job exited, restarting in 5s..."
-    sleep 5
-  done
-'
+while true; do
+  uv run python -m streamguard.streaming_job
+  echo "[$(date)] streaming job exited, restarting in 5s..."
+  sleep 5
+done
 ```
 
 ### Terminal 4 - Backend + frontend
@@ -107,8 +116,8 @@ Open <http://localhost:5173>.
 
 | Component | Port | Notes |
 |---|---|---|
-| Kafka broker | 9092 | Docker container |
-| Recording agent | - | uv / pynput |
+| Kafka broker | 9092 | Docker container (auto-restarts via compose) |
+| Recording agent | - | uv / pynput; subscribes to macOS wake events |
 | Spark streaming job | - | writes `output/metrics/`, `output/events/` |
 | FastAPI backend | 8000 | also owns the in-process batch loop |
 | React dev server | 5173 | the dashboard |
@@ -145,22 +154,17 @@ test: green = full chain is flowing.
 ps -ef | grep -E 'streamguard.streaming_job|streamguard.agent' | grep -v grep
 ```
 
-- **Streaming missing**: the auto-restart loop should bring it back
-  within 5s; if not, restart it.
-- **Agent missing**: restart it.
-- **Both running, no fresh data**: the agent's pynput event tap likely
-  went silent after a sleep/wake cycle (process alive, no events
-  flowing). Restart the agent.
+All three of agent, streaming job, and backend live inside a restart
+loop, so a missing process should respawn within ~5 s on its own. If
+the dot stays red:
 
-If you're in tmux:
-
-```sh
-tmux attach -t streamguard
-# Ctrl+B then 0 to jump to the agent window
-# Ctrl+C to kill the agent process
-# Up arrow + Enter to re-run the same command
-# Ctrl+B then D to detach again
-```
+- **No process listed at all**: the loop itself was killed. Re-run
+  `./startup-tmux.sh` (it is idempotent — kills the prior session
+  first) or relaunch the affected terminal.
+- **Process listed but no fresh data**: tail the relevant tmux pane
+  (`tmux attach -t streamguard`, then `Ctrl+B 0/1/2/3`) for an error
+  message. Wake handling now lives inside the agent, so a stuck event
+  tap is no longer the expected culprit; check Kafka first.
 
 ### Spark Kafka NPE on streaming-job startup
 
@@ -177,6 +181,20 @@ rm -rf output/events/_spark_metadata
 The loop restarts cleanly within 5s. Parquet data in `output/metrics/`,
 `output/events/`, `output/sessions/`, `output/baseline/`, and
 `output/heatmaps/` is preserved.
+
+### Rhythm-metric removal migration
+
+The `flight_time_std` and `long_pause_count` columns were retired. On
+the first restart after pulling that change, wipe the now-incompatible
+streaming state so Spark rebuilds the parquet with the new schema:
+
+```sh
+pkill -f streamguard.streaming_job
+rm -rf output/checkpoint/metrics output/metrics output/baseline
+```
+
+The streaming job recreates `output/metrics/` on its next loop; the
+batch scheduler will refill `output/baseline/` on its next tick.
 
 ### Force a fresh batch run
 
@@ -200,19 +218,6 @@ rm -rf output/
 ```
 
 Then start over from "Option A" or "Option B".
-
-## Sleep and lid behaviour
-
-With `caffeinate -imsu` the **system** stays awake while a wrapped process
-is alive on AC power. The **screen** is allowed to sleep, which is what
-you want for a long recording (less light pollution, less display wear).
-
-**Closing the lid still forces sleep** regardless of caffeinate, unless
-you're in clamshell mode (external display + external keyboard + AC).
-For everyday transport: close the lid, accept the gap, open the lid, the
-streaming-job auto-restart loop handles Spark's RPC death on wake; the
-agent may need a manual restart (its pynput tap can go silent through
-sleep). The dashboard's live dot is the signal.
 
 ## Shutdown
 

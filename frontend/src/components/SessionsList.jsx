@@ -44,15 +44,21 @@ export function SessionsList({ sessions, lastRunIso, status }) {
         {rows.map((s) => {
           const start = parseUtc(s.session_start);
           const end = parseUtc(s.session_end);
-          const durationMin = Math.max(1, Math.round((end - start) / 60000));
+          // start/end can be null if the backend ever emits a
+          // malformed timestamp. Without this guard the duration
+          // arithmetic produces NaN and the cell renders "NaN min".
+          const durationMin =
+            start && end
+              ? Math.max(1, Math.round((end - start) / 60000))
+              : null;
 
           return (
             <div
               key={s.session_id}
               className="grid grid-cols-5 gap-4 text-sm py-2 border-b border-zinc-700/50 text-zinc-200 items-center"
             >
-              <div>{start.toLocaleString()}</div>
-              <div>{durationMin} min</div>
+              <div>{start ? start.toLocaleString() : "—"}</div>
+              <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
               <div>{s.keystrokes_total}</div>
               <FatigueCell s={s} />
               <FatigueScale s={s} />

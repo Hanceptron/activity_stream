@@ -1,16 +1,20 @@
+import { useMemo } from "react";
+
 // A single SVG heatmap of mouse traffic. One <rect> per cell from
 // the API, filtered to the chosen event type ("move" or "click").
 // Opacity scales as log(count + 1) / log(max + 1) so a cell with
 // 5 hits is still visible next to one with 5000.
 export function Heatmap({ data, type, title, color }) {
-  const cells = (data || []).filter((c) => c.type === type);
-
-  // viewBox is sized to fit the actual data with a 16:9 baseline so
-  // an empty heatmap still has a sensible aspect ratio.
-  const maxX = cells.reduce((m, c) => Math.max(m, c.cell_x + 1), 48);
-  const maxY = cells.reduce((m, c) => Math.max(m, c.cell_y + 1), 27);
-  const maxCount = cells.reduce((m, c) => Math.max(m, c.count), 0);
-  const denom = Math.log(maxCount + 1);
+  // useMemo over the three reduce passes — at 1w the heatmap can
+  // hold hundreds of cells and the parent re-renders on every
+  // poll tick.
+  const { cells, maxX, maxY, denom } = useMemo(() => {
+    const cells = (data || []).filter((c) => c.type === type);
+    const maxX = cells.reduce((m, c) => Math.max(m, c.cell_x + 1), 48);
+    const maxY = cells.reduce((m, c) => Math.max(m, c.cell_y + 1), 27);
+    const maxCount = cells.reduce((m, c) => Math.max(m, c.count), 0);
+    return { cells, maxX, maxY, denom: Math.log(maxCount + 1) };
+  }, [data, type]);
 
   return (
     <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">

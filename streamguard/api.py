@@ -18,6 +18,8 @@ the frontend staleness chips.
 """
 
 import json
+import logging
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -30,6 +32,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from streamguard.batch_job import build_session, compute_all
+
+log = logging.getLogger("streamguard.api")
 
 METRICS_PATH = "output/metrics"
 SESSIONS_PATH = "output/sessions"
@@ -53,6 +57,11 @@ class BatchState:
 
 
 batch_state = BatchState()
+# Guards every read/write of `batch_state`. The scheduler thread mutates
+# it inside `_run_batch`; FastAPI request handlers read it from worker
+# threads. Without the lock, a request could observe torn state (e.g.
+# status="running" alongside a stale `last_run` from the previous tick).
+batch_state_lock = threading.Lock()
 
 
 def _run_batch(spark) -> None:
@@ -61,16 +70,24 @@ def _run_batch(spark) -> None:
     thread. ``last_run`` is set on both success and failure so the
     staleness chip always shows a real timestamp.
     """
-    batch_state.last_status = "running"
+    with batch_state_lock:
+        batch_state.last_status = "running"
     try:
         compute_all(spark)
-        batch_state.last_status = "ok"
-        batch_state.last_error = None
+        with batch_state_lock:
+            batch_state.last_status = "ok"
+            batch_state.last_error = None
     except Exception as exc:  # noqa: BLE001 — see docstring
-        batch_state.last_status = "failed"
-        batch_state.last_error = str(exc)
+        # logging.exception preserves the full traceback in the
+        # backend log; batch_state.last_error keeps the short string
+        # for the /api/batch_status endpoint and the dashboard chip.
+        log.exception("batch run failed")
+        with batch_state_lock:
+            batch_state.last_status = "failed"
+            batch_state.last_error = str(exc)
     finally:
-        batch_state.last_run = datetime.now(timezone.utc)
+        with batch_state_lock:
+            batch_state.last_run = datetime.now(timezone.utc)
 
 
 @asynccontextmanager
@@ -104,6 +121,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="StreamGuard API", lifespan=lifespan)
+# allow_origins=["*"] is intentionally permissive for the single-user
+# dev setup (Vite on 5173 + this API on 8000). Tighten before exposing
+# the dashboard on a network.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -116,6 +136,13 @@ def _read_parquet(path: str) -> pd.DataFrame:
     # Return an empty DataFrame when the directory does not exist
     # yet. The batch job's outputs in particular are missing until
     # that job has been run at least once.
+    #
+    # Note: this reads parquet directories that Spark is appending to
+    # in another process. Spark uses atomic file-level commits, so a
+    # request lands on a self-consistent snapshot; the tiny race where
+    # a request opens the directory between `_temporary` rename and
+    # `_spark_metadata` commit can yield an empty DataFrame on rare
+    # occasions. Acceptable for a single-user dashboard.
     if not Path(path).exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
@@ -174,8 +201,12 @@ def get_batch_status() -> dict:
     """Most recent batch-job run state. Source of truth for the
     staleness chips on the heatmap, hotspots, and sessions panels.
     """
+    with batch_state_lock:
+        last_run = batch_state.last_run
+        status = batch_state.last_status
+        error = batch_state.last_error
     return {
-        "last_run": batch_state.last_run.isoformat() if batch_state.last_run else None,
-        "status": batch_state.last_status,
-        "error": batch_state.last_error,
+        "last_run": last_run.isoformat() if last_run else None,
+        "status": status,
+        "error": error,
     }

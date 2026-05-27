@@ -1,17 +1,20 @@
 """StreamGuard Spark batch job.
 
-Reads the raw event archive at output/events/, computes
-order-dependent rhythm metrics with lag, sessionizes activity,
-writes per-session fatigue summaries to output/sessions/, a
-per-user baseline to output/baseline/, and one spatial heatmap per
-preset time range under output/heatmaps/{1h,6h,1d,3d,1w}/.
-Overwrites its output directories each run.
+Reads the raw event archive at output/events/, sessionizes activity,
+writes per-session fatigue summaries to output/sessions/, a per-user
+baseline to output/baseline/, and one spatial heatmap per preset
+time range under output/heatmaps/{1h,6h,1d,3d,1w}/. Overwrites its
+output directories each run.
 """
 
+import logging
 from datetime import timedelta
+from pathlib import Path
 
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
+
+log = logging.getLogger("streamguard.batch_job")
 
 EVENTS_PATH = "output/events"
 SESSIONS_PATH = "output/sessions"
@@ -20,19 +23,6 @@ HEATMAPS_PATH = "output/heatmaps"
 
 WINDOW_SIZE = "1 minute"
 SESSION_GAP_SECONDS = 5 * 60
-PAUSE_THRESHOLD_SECONDS = 2.0
-
-# Activity floor for rhythm. A minute with fewer than this many
-# key_down events is too sparse to produce a meaningful
-# flight_time_std or long_pause_count - a couple of keystrokes
-# scattered across a minute have one big gap that dominates both
-# statistics. Sparse minutes still appear in the per_window output
-# with their count columns; the two rhythm columns are nulled out
-# (see per_window_metrics). user_baseline and session_summary then
-# automatically aggregate "active minutes only" because Spark's
-# mean / stddev / regr_slope skip nulls. Mirrors
-# MIN_KEYSTROKES_FOR_RHYTHM in streaming_job.py.
-MIN_KEYSTROKES_FOR_RHYTHM = 20
 
 MIN_WINDOWS_FOR_FATIGUE = 5
 
@@ -57,7 +47,7 @@ def build_session():
 
 
 def per_window_metrics(events):
-    """One row per (session_id, time_window, user) with all six metrics."""
+    """One row per (session_id, time_window, user) with the four count metrics."""
     is_kd = F.col("type") == "key_down"
 
     # Sessionize manually. Walking each user's events in event-time
@@ -91,18 +81,11 @@ def per_window_metrics(events):
         .drop("_prev_ts", "_new_session")
     )
 
-    # Materialize the per-minute window once and reuse it for the
-    # counts groupBy, the rhythm lag's partitionBy, and the rhythm
-    # groupBy. F.window is deterministic — calling it three times
-    # would produce identical structs — but pinning the column up
-    # front keeps the three downstream uses provably consistent and
-    # is what allows the lag below to be partitioned by the same
-    # window value the rhythm aggregation groups on.
     events_w = events_s.withColumn(
         "time_window", F.window(F.col("event_time"), WINDOW_SIZE)
     )
 
-    counts = (
+    return (
         events_w.groupBy("session_id", "time_window", "user")
         .agg(
             F.count(F.when(is_kd, 1)).alias("keystrokes"),
@@ -116,69 +99,19 @@ def per_window_metrics(events):
         )
     )
 
-    # Window-local lag. Partitioning by (user, time_window) means
-    # the previous-event lookup only crosses keystrokes inside the
-    # same minute — the first key_down of every minute gets a null
-    # gap, matching the streaming UDF's per-window semantics.
-    #
-    # Why this matters: the previous partitioning (just by user)
-    # let the first key_down of a freshly-resumed session take its
-    # gap from the LAST key_down of the previous session, which
-    # could be hours earlier. That single inter-session gap then
-    # poisoned the minute's flight_time_std (max observed ~7900 s
-    # for a 49-keystroke minute) and inflated its long_pause_count
-    # by one. With window-local lag, idle gaps that span window
-    # boundaries vanish from the per-minute stats — which is the
-    # correct semantics for "how steady was the typing inside this
-    # one minute."
-    window_user_order = Window.partitionBy("user", "time_window").orderBy("event_time")
-    key_events_with_gap = (
-        events_w.filter(is_kd)
-        .withColumn(
-            "gap_seconds",
-            F.col("event_time").cast("double")
-            - F.lag("event_time").over(window_user_order).cast("double"),
-        )
-    )
-
-    rhythm = (
-        key_events_with_gap.groupBy("session_id", "time_window", "user")
-        .agg(
-            F.stddev(F.col("gap_seconds")).alias("flight_time_std"),
-            F.count(
-                F.when(F.col("gap_seconds") > PAUSE_THRESHOLD_SECONDS, 1)
-            ).alias("long_pause_count"),
-        )
-    )
-
-    # Null out the rhythm columns on minutes that don't clear the
-    # activity floor. The count columns are kept as-is so sparse
-    # minutes still show up with their keystrokes/words/clicks
-    # contributions. Spark's downstream aggregates (mean, stddev,
-    # regr_slope) skip nulls, so user_baseline and session_summary
-    # automatically compute "active minutes only" rhythm without
-    # any other code changes.
-    return (
-        counts.join(rhythm, on=["session_id", "time_window", "user"], how="left")
-        .withColumn(
-            "flight_time_std",
-            F.when(
-                F.col("keystrokes") >= MIN_KEYSTROKES_FOR_RHYTHM,
-                F.col("flight_time_std"),
-            ),
-        )
-        .withColumn(
-            "long_pause_count",
-            F.when(
-                F.col("keystrokes") >= MIN_KEYSTROKES_FOR_RHYTHM,
-                F.col("long_pause_count"),
-            ),
-        )
-    )
-
 
 def session_summary(per_window):
-    """One row per (session_id, user) with totals and four fatigue slopes."""
+    """One row per (session_id, user) with totals and the fatigue index.
+
+    fatigue_index combines two within-session slopes:
+      - keystrokes_slope: typing speed trend (negative = slowing down)
+      - corrections_slope: error trend (positive = more mistakes)
+    Both are computed against `window_idx`, the zero-based ordinal of
+    each minute inside the session. Fatigue = slowing down AND making
+    more errors, so we add the corrections slope and subtract the
+    keystroke slope. (The previous rhythm/pause inputs were removed
+    when the rhythm pipeline was retired.)
+    """
     window_order = Window.partitionBy("session_id", "user").orderBy(
         F.col("time_window.start")
     )
@@ -202,29 +135,18 @@ def session_summary(per_window):
             F.regr_slope(F.col("corrections"), F.col("window_idx")).alias(
                 "corrections_slope"
             ),
-            F.regr_slope(F.col("flight_time_std"), F.col("window_idx")).alias(
-                "rhythm_slope"
-            ),
-            F.regr_slope(F.col("long_pause_count"), F.col("window_idx")).alias(
-                "pause_slope"
-            ),
         )
         .withColumn(
             "fatigue_index",
-            -F.col("keystrokes_slope")
-            + F.col("corrections_slope")
-            + F.col("rhythm_slope")
-            + F.col("pause_slope"),
+            -F.col("keystrokes_slope") + F.col("corrections_slope"),
         )
         .withColumn(
-            # fatigue_index is null when any of the four slopes is
-            # null (Spark addition propagates null). After the N=20
-            # threshold, a session whose active minutes are all
-            # sparse can have null rhythm_slope and pause_slope even
-            # though window_count >= MIN_WINDOWS_FOR_FATIGUE. We
-            # therefore also require fatigue_index itself to be
-            # non-null so the frontend can use this single flag as a
-            # safe "the number below is renderable" guard.
+            # fatigue_index is null when either slope is null (Spark
+            # addition propagates null). regr_slope is null when a
+            # session has fewer than two windows. We require both the
+            # window-count floor and a non-null fatigue_index so the
+            # frontend can use this single flag as a safe "the number
+            # below is renderable" guard.
             "fatigue_reliable",
             (F.col("window_count") >= MIN_WINDOWS_FOR_FATIGUE)
             & F.col("fatigue_index").isNotNull(),
@@ -233,15 +155,8 @@ def session_summary(per_window):
 
 
 def user_baseline(per_window):
-    """One row per user with mean and stddev for each of the six metrics."""
-    metrics = [
-        "keystrokes",
-        "words",
-        "corrections",
-        "clicks",
-        "flight_time_std",
-        "long_pause_count",
-    ]
+    """One row per user with mean and stddev for each of the four metrics."""
+    metrics = ["keystrokes", "words", "corrections", "clicks"]
     agg_exprs = []
     for m in metrics:
         agg_exprs.append(F.mean(m).alias(f"{m}_mean"))
@@ -283,7 +198,19 @@ def compute_all(spark):
     in-process scheduler in ``api.py``. The ``unpersist()`` calls in
     the ``finally`` blocks matter for the scheduled case — without
     them, cached DataFrames pile up in Spark memory across runs.
+
+    Returns early with a warning when ``output/events/`` does not
+    exist yet (first run, or after ``rm -rf output/``). Without this
+    guard ``spark.read.parquet`` raises ``AnalysisException`` and the
+    scheduler tick fails with a misleading traceback every 5 min.
     """
+    if not Path(EVENTS_PATH).exists():
+        log.warning(
+            "event archive at %s does not exist yet; skipping batch run",
+            EVENTS_PATH,
+        )
+        return
+
     events = spark.read.parquet(EVENTS_PATH).cache()
     try:
         per_window = per_window_metrics(events).cache()
