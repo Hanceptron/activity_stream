@@ -19,6 +19,7 @@ the frontend staleness chips.
 
 import json
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -66,9 +67,16 @@ batch_state_lock = threading.Lock()
 
 def _run_batch(spark) -> None:
     """Scheduler entry point. Wraps ``compute_all`` so failures are
-    recorded in ``batch_state`` rather than crashing the scheduler
-    thread. ``last_run`` is set on both success and failure so the
-    staleness chip always shows a real timestamp.
+    recorded in ``batch_state``. ``last_run`` is set on both success
+    and failure so the staleness chip always shows a real timestamp.
+
+    On any failure we exit the whole process so the outer bash
+    restart loop respawns the API with a fresh Spark session. macOS
+    sleep/wake breaks the Spark RPC permanently for the surviving
+    JVM, and PySpark cannot rebuild a session in-process after the
+    JVM dies. Without an exit, every subsequent 5-minute tick would
+    fail the same way and ``last_run`` would freeze - breaking the
+    `/api/batch_status` freshness contract.
     """
     with batch_state_lock:
         batch_state.last_status = "running"
@@ -77,17 +85,22 @@ def _run_batch(spark) -> None:
         with batch_state_lock:
             batch_state.last_status = "ok"
             batch_state.last_error = None
+            batch_state.last_run = datetime.now(timezone.utc)
     except Exception as exc:  # noqa: BLE001 — see docstring
-        # logging.exception preserves the full traceback in the
-        # backend log; batch_state.last_error keeps the short string
-        # for the /api/batch_status endpoint and the dashboard chip.
-        log.exception("batch run failed")
+        # Record the failure before exiting so a request that lands
+        # between the failure and process death sees the real state.
+        log.exception("batch run failed - exiting for fresh Spark respawn")
         with batch_state_lock:
             batch_state.last_status = "failed"
             batch_state.last_error = str(exc)
-    finally:
-        with batch_state_lock:
             batch_state.last_run = datetime.now(timezone.utc)
+        # os._exit bypasses uvicorn's signal handlers, the
+        # APScheduler shutdown, and the asyncio loop. That is
+        # intentional - the outer bash loop is the recovery
+        # mechanism, and we want a hard, fast restart rather than a
+        # tidy one. Anything that touches Spark here would also
+        # hang on the same dead RPC.
+        os._exit(1)
 
 
 @asynccontextmanager

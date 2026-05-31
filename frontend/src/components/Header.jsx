@@ -36,7 +36,13 @@ export function Header({
 
   const latest =
     metrics && metrics.length > 0 ? metrics[metrics.length - 1] : null;
-  const latestTime = latest ? parseUtc(latest.window_start)?.getTime() : null;
+  // window_end (not window_start) so the dot reads "how stale is the
+  // freshest measured minute" rather than "how far past the start of
+  // the freshest window are we". With Spark's 1-min window + 30 s
+  // watermark, window_start age oscillates 90-150 s under continuous
+  // activity, which would cross the 2-minute live threshold every
+  // minute and flicker the dot. window_end age stays in 30-90 s.
+  const latestTime = latest ? parseUtc(latest.window_end)?.getTime() : null;
   const ageMs = latestTime != null ? now - latestTime : Infinity;
   const isLive = ageMs < 2 * 60 * 1000;
 

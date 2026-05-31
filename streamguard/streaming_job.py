@@ -41,7 +41,17 @@ EVENTS_PATH = "output/events"
 METRICS_CHECKPOINT = "output/checkpoint/metrics"
 EVENTS_CHECKPOINT = "output/checkpoint/events"
 
-WATERMARK = "30 seconds"
+# 5-second watermark balances late-event tolerance against time-to-first-window-emit.
+# Events flow over localhost from a process whose clock is sub-millisecond aligned
+# with the streaming JVM's, so 5 s is generous. The trade-off matters for the
+# live-dot smoke test: a 1-minute window with append-mode + N-second watermark
+# cannot emit a window before window_size+N seconds of wall-clock have elapsed
+# since the first event. With WATERMARK=30 s, that was ~90 s, which (a) put the
+# dot through a flicker cycle each minute under sustained typing and (b) made
+# cold-start-to-green and wake-to-green slower than the README's 2-minute
+# smoke-test threshold. Header.jsx now ages off window_end, so dropping the
+# watermark also leaves more headroom inside the 2-minute "live" window.
+WATERMARK = "5 seconds"
 WINDOW_DURATION = "1 minute"
 
 
