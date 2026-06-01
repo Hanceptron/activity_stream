@@ -61,9 +61,11 @@ export function Header({
   return (
     <header className="flex items-center justify-between gap-4 flex-wrap">
       <div className="flex items-center gap-4 flex-wrap">
-        <h1 className="text-lg font-semibold text-zinc-100">
-          Performance Tracker
-        </h1>
+        <img
+          src="/logo.png"
+          alt="Keyspark"
+          className="h-9 w-auto object-contain select-none mix-blend-screen drop-shadow-[0_0_16px_rgba(139,92,246,0.45)]"
+        />
         <UserSelector
           users={users}
           value={selectedUser}
@@ -126,7 +128,7 @@ export function Header({
 function Chip({ children, ...rest }) {
   return (
     <span
-      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-300"
+      className="glass-chip text-xs text-zinc-200"
       {...rest}
     >
       {children}

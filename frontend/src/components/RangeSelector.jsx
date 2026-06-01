@@ -11,15 +11,15 @@ const RANGES = [
 
 export function RangeSelector({ value, onChange }) {
   return (
-    <div className="inline-flex rounded-md bg-zinc-800 border border-zinc-700 overflow-hidden">
+    <div className="inline-flex rounded-md bg-zinc-800/60 border border-white/10 overflow-hidden backdrop-blur">
       {RANGES.map(([v, label]) => (
         <button
           key={v}
           onClick={() => onChange(v)}
           className={`px-3 py-1 text-xs transition-colors ${
             value === v
-              ? "bg-zinc-700 text-zinc-100"
-              : "text-zinc-400 hover:bg-zinc-700/50 hover:text-zinc-200"
+              ? "bg-brand-violet/30 text-zinc-100"
+              : "text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
           }`}
         >
           {label}

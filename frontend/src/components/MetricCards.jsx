@@ -86,7 +86,7 @@ export function MetricCards({ metrics, baseline }) {
         return (
           <div
             key={c.label}
-            className="relative bg-zinc-800 rounded-lg p-4 border border-zinc-700"
+            className="relative glass-panel"
           >
             <BaselineBadge z={z} direction={c.direction} label={c.label} />
             <div className="text-sm text-zinc-400">{c.label}</div>

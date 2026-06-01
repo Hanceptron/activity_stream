@@ -28,7 +28,7 @@ export function IdleStrip({ buckets, totalMinutes }) {
           <div
             key={i}
             className={`flex-1 h-3 rounded-sm ${
-              active ? "bg-green-500" : "bg-zinc-700"
+              active ? "bg-green-500" : "glass-track"
             }`}
             title={`${timeStr} — ${counts}`}
           />

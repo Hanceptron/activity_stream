@@ -13,7 +13,7 @@ export function UserSelector({ users, value, onChange }) {
       <select
         disabled
         aria-label="Select user (none available)"
-        className="bg-zinc-800 border border-zinc-700 text-zinc-500 text-sm rounded px-2 py-1"
+        className="bg-zinc-800/60 border border-white/10 text-zinc-500 text-sm rounded px-2 py-1"
       >
         <option>no users</option>
       </select>
@@ -25,7 +25,7 @@ export function UserSelector({ users, value, onChange }) {
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value)}
       aria-label="Select user"
-      className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm rounded px-2 py-1"
+      className="bg-zinc-800/60 border border-white/10 text-zinc-200 text-sm rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-cyan/70"
     >
       {users.map((u) => (
         <option key={u} value={u}>

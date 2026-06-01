@@ -42,15 +42,16 @@ export function MetricsChart({ buckets, totalMinutes }) {
   return (
     <ResponsiveContainer width="100%" height={280}>
       <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.10)" />
         <XAxis dataKey="time" stroke="#a1a1aa" fontSize={12} />
         <YAxis stroke="#a1a1aa" fontSize={12} />
         <Tooltip
           contentStyle={{
-            background: "#27272a",
-            border: "1px solid #3f3f46",
-            borderRadius: 6,
+            background: "rgba(24,24,27,0.85)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 8,
             color: "#e4e4e7",
+            backdropFilter: "blur(8px)",
           }}
         />
         <Legend wrapperStyle={{ color: "#d4d4d8" }} />

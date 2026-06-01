@@ -20,7 +20,7 @@ export function SessionsList({ sessions, lastRunIso, status }) {
   const rows = (sessions || []).slice(0, 20);
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-center justify-between mb-3 gap-3">
         <div className="flex items-baseline gap-3">
           <h2 className="text-sm text-zinc-400">Recent sessions</h2>
@@ -48,7 +48,7 @@ export function SessionsList({ sessions, lastRunIso, status }) {
 // view of a single day's sessions.
 export function SessionTableHeader() {
   return (
-    <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 pb-2 border-b border-zinc-700">
+    <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 pb-2 border-b border-white/10">
       <div>Started</div>
       <div>Duration</div>
       <div>Keystrokes</div>
@@ -70,7 +70,7 @@ export function SessionRow({ s }) {
     start && end ? Math.max(1, Math.round((end - start) / 60000)) : null;
 
   return (
-    <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-zinc-700/50 text-zinc-200 items-center">
+    <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-white/5 text-zinc-200 items-center">
       <div>{start ? start.toLocaleString() : "—"}</div>
       <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
       <div>{s.keystrokes_total}</div>

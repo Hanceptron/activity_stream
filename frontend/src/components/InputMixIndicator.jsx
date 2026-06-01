@@ -23,13 +23,13 @@ export function InputMixIndicator({ latest }) {
     <div
       role="img"
       aria-label={ariaLabel}
-      className="bg-zinc-800 rounded-lg p-3 border border-zinc-700 flex items-center gap-3"
+      className="glass-panel-sm flex items-center gap-3"
     >
       <KeyboardIcon className="w-4 h-4 text-zinc-400 shrink-0" />
-      <div className="flex-1 relative h-2 bg-zinc-700 rounded-full">
+      <div className="flex-1 relative h-2 glass-track rounded-full">
         {mix != null && (
           <div
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 bg-zinc-200 rounded-full border-2 border-zinc-800 transition-all"
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 bg-zinc-100 rounded-full border-2 border-white/20 transition-all"
             style={{ left: `${mix * 100}%` }}
           />
         )}

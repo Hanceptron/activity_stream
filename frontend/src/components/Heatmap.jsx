@@ -69,7 +69,7 @@ export function Heatmap({ data, type, title, frameW = 108, frameH = 70 }) {
   }, [data, type, frameW, frameH]);
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3">
         <h2 className="text-sm text-zinc-400">{title}</h2>
         {maxCount > 0 && (

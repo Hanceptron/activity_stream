@@ -54,7 +54,7 @@ export function TodayTotals({ sessions }) {
   const isEmpty = todays.length === 0;
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3">
         <h2 className="text-sm text-zinc-400">
           Today <span className="text-zinc-600">(sessions started since midnight)</span>

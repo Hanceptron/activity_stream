@@ -25,7 +25,7 @@ export function ActivityPanel({ metrics, range = "1h", anchorMs, label }) {
   const totalMinutes = cfg.bucketCount * cfg.bucketSizeMin;
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <h2 className="text-sm text-zinc-400 mb-3">{label ?? cfg.label}</h2>
       <div className="mb-3">
         <IdleStrip buckets={buckets} totalMinutes={totalMinutes} />

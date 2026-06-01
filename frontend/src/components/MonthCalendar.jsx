@@ -71,7 +71,7 @@ export function MonthCalendar({ sessions, selectedDay, onSelectDay }) {
   }, [byDay, now]);
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
         <h2 className="text-sm text-zinc-400">
           History (last {WEEKS} weeks)
@@ -114,8 +114,8 @@ function DayCell({ cell, isSelected, onClick }) {
     ? "bg-zinc-900 opacity-30"
     : meta
       ? meta.bg
-      : "bg-zinc-900 border border-zinc-700";
-  const ring = isSelected ? "ring-2 ring-blue-400" : "";
+      : "glass-inset";
+  const ring = isSelected ? "ring-2 ring-brand-cyan" : "";
 
   const summary = cell.isFuture
     ? `${cell.date.toDateString()}: not yet`
@@ -131,7 +131,7 @@ function DayCell({ cell, isSelected, onClick }) {
       className={`h-7 rounded text-[10px] tabular-nums leading-none flex items-center justify-center transition-all ${bg} ${ring} ${
         cell.isFuture
           ? "cursor-not-allowed"
-          : "cursor-pointer hover:ring-2 hover:ring-zinc-500"
+          : "cursor-pointer hover:ring-2 hover:ring-brand-violet/70"
       }`}
       aria-label={summary}
       title={summary}
@@ -163,7 +163,7 @@ function Legend() {
       ))}
       <div className="flex items-center gap-1">
         <span
-          className="inline-block w-2.5 h-2.5 rounded bg-zinc-900 border border-zinc-700"
+          className="inline-block w-2.5 h-2.5 rounded glass-inset"
           aria-hidden="true"
         />
         No data

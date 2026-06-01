@@ -31,7 +31,7 @@ export function ActivityGauge({ metrics, range = "1h", anchorMs, label }) {
   const rangeLabel = (label ?? cfg.label).toLowerCase();
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between gap-3">
         <div className="text-sm text-zinc-400">Active time · {rangeLabel}</div>
         <div className="text-xs text-zinc-500">
@@ -42,7 +42,7 @@ export function ActivityGauge({ metrics, range = "1h", anchorMs, label }) {
         {activePct.toFixed(0)}%
       </div>
       <div
-        className="mt-3 h-2.5 bg-zinc-700 rounded-full overflow-hidden"
+        className="mt-3 h-2.5 glass-track rounded-full overflow-hidden"
         role="img"
         aria-label={`${activePct.toFixed(0)}% active over ${rangeLabel}`}
       >

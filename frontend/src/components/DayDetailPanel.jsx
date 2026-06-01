@@ -67,7 +67,7 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
   const anchorMs = endOfLocalDayMs(dayKey);
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-baseline gap-3 flex-wrap">
           <h2 className="text-sm text-zinc-300">{dateLabel}</h2>
@@ -86,7 +86,7 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
         <button
           type="button"
           onClick={onClose}
-          className="text-zinc-500 hover:text-zinc-200 text-xl leading-none px-2"
+          className="text-zinc-500 hover:text-brand-cyan text-xl leading-none px-2"
           aria-label="Close day detail"
           title="Close"
         >

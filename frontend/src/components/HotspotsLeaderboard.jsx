@@ -18,7 +18,7 @@ export function HotspotsLeaderboard({ heatmap, lastRunIso, status }) {
   const topCount = top.length > 0 ? top[0].count ?? 0 : 0;
 
   return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+    <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3">
         <h2 className="text-sm text-zinc-400">Click hotspots</h2>
         <StalenessChip lastRunIso={lastRunIso} status={status} />
@@ -44,7 +44,7 @@ export function HotspotsLeaderboard({ heatmap, lastRunIso, status }) {
                   {cell.count}
                 </div>
                 <div
-                  className="h-2 bg-zinc-700 rounded overflow-hidden"
+                  className="h-2 glass-track rounded overflow-hidden"
                   aria-hidden="true"
                 >
                   <div
