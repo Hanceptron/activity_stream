@@ -32,7 +32,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from streamguard.batch_job import build_session, compute_all
+from streamguard.batch_job import CELL_SIZE, build_session, compute_all
 
 log = logging.getLogger("streamguard.api")
 
@@ -40,6 +40,16 @@ METRICS_PATH = "output/metrics"
 SESSIONS_PATH = "output/sessions"
 BASELINE_PATH = "output/baseline"
 HEATMAPS_PATH = "output/heatmaps"
+DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
+HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
+PREDICTIONS_PATH = "output/predictions.parquet"
+ML_METRICS_PATH = "output/models/metrics.json"
+DISPLAY_PATH = "output/display.json"
+
+# Fallback when the agent has not written output/display.json yet:
+# MacBook 16" built-in at default scaling. Keeps the heatmap frame
+# sane on a fresh checkout.
+DEFAULT_DISPLAY = {"width": 1728, "height": 1117}
 
 SESSIONS_LIMIT = 50
 HEATMAP_RANGES = {"1h", "6h", "1d", "3d", "1w"}
@@ -190,6 +200,17 @@ def get_sessions() -> list:
     df = _read_parquet(SESSIONS_PATH)
     if df.empty:
         return []
+    # If the ML predictions sidecar exists, left-join the per-session
+    # predicted-high-fatigue probabilities. Absent file = ML disabled,
+    # and the endpoint just returns sessions without the prediction
+    # columns - the dashboard renders normally either way.
+    preds_path = Path(PREDICTIONS_PATH)
+    if preds_path.exists():
+        try:
+            preds = pd.read_parquet(preds_path)
+            df = df.merge(preds, on=["session_id", "user"], how="left")
+        except Exception:
+            log.exception("failed to merge predictions; serving sessions without them")
     df = df.sort_values("session_start", ascending=False).head(SESSIONS_LIMIT)
     return _to_records(df)
 
@@ -209,6 +230,56 @@ def get_heatmap(range: str = "1h") -> list:
     return _to_records(_read_parquet(f"{HEATMAPS_PATH}/{range}"))
 
 
+@app.get("/api/day_metrics")
+def get_day_metrics(day: str, user: str) -> list:
+    """Per-minute keystroke/word/correction/click counts for a single
+    calendar day, for the History drill-down's timeline graph. ``day``
+    is a local-day key "YYYY-MM-DD"; the batch job's ``day`` column was
+    written with the same host timezone, so this is a direct match.
+    Empty list until the batch has produced output/day_minute_metrics.
+    """
+    df = _read_parquet(DAY_MINUTE_METRICS_PATH)
+    if df.empty:
+        return []
+    df = df[(df["day"] == day) & (df["user"] == user)].sort_values("window_start")
+    return _to_records(df)
+
+
+@app.get("/api/heatmap_day")
+def get_heatmap_day(day: str, user: str) -> list:
+    """Spatial heatmap cells (move + click) for a single calendar day,
+    for the History drill-down's heatmaps. Same day/user matching as
+    /api/day_metrics. Empty list until the batch has produced
+    output/heatmap_by_day.
+    """
+    df = _read_parquet(HEATMAP_BY_DAY_PATH)
+    if df.empty:
+        return []
+    df = df[(df["day"] == day) & (df["user"] == user)]
+    return _to_records(df)
+
+
+@app.get("/api/display")
+def get_display() -> dict:
+    """Primary-screen grid bounds for framing the mouse heatmap. The
+    agent writes output/display.json (screen size in points) at
+    startup; we divide by the heatmap CELL_SIZE so the frontend gets
+    bounds in the same cell units the heatmap data uses. Falls back to
+    the MacBook 16" default when the file is absent.
+    """
+    try:
+        disp = json.loads(Path(DISPLAY_PATH).read_text())
+        width = int(disp["width"])
+        height = int(disp["height"])
+    except (OSError, ValueError, KeyError, TypeError):
+        width = DEFAULT_DISPLAY["width"]
+        height = DEFAULT_DISPLAY["height"]
+    # ceil so a partial trailing cell is included rather than clipped.
+    grid_w = -(-width // CELL_SIZE)
+    grid_h = -(-height // CELL_SIZE)
+    return {"grid_w": grid_w, "grid_h": grid_h}
+
+
 @app.get("/api/batch_status")
 def get_batch_status() -> dict:
     """Most recent batch-job run state. Source of truth for the
@@ -223,3 +294,19 @@ def get_batch_status() -> dict:
         "status": status,
         "error": error,
     }
+
+
+@app.get("/api/ml/metrics")
+def get_ml_metrics() -> dict:
+    """Cross-validated evaluation metrics for the fatigue classifier.
+
+    Returns the contents of ``output/models/metrics.json`` written by
+    ``streamguard.ml evaluate``. An absent file means the user has not
+    trained or evaluated the model yet - we return ``{"available":
+    false}`` rather than 404 so the dashboard can render a "not yet
+    trained" state cleanly.
+    """
+    p = Path(ML_METRICS_PATH)
+    if not p.exists():
+        return {"available": False}
+    return {"available": True, **json.loads(p.read_text())}

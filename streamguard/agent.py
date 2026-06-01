@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from pynput import keyboard, mouse
 
@@ -56,13 +57,14 @@ WATCHDOG_CHECK_INTERVAL = 5.0
 # where wake recovery is a no-op.
 try:
     import objc
-    from AppKit import NSWorkspace
+    from AppKit import NSScreen, NSWorkspace
     from ApplicationServices import AXIsProcessTrusted
     from Foundation import NSDate, NSObject, NSRunLoop
     _HAS_PYOBJC = True
 except ImportError:
     _HAS_PYOBJC = False
     AXIsProcessTrusted = None  # type: ignore
+    NSScreen = None  # type: ignore
 
 log = logging.getLogger("streamguard.agent")
 
@@ -270,6 +272,29 @@ def _hid_idle_seconds() -> float | None:
     return None
 
 
+def _record_display_size() -> None:
+    # Write the primary display's size (in points) to
+    # output/display.json so the dashboard can frame the mouse heatmap
+    # to the real screen and clip any external-monitor tail. The
+    # magnitude of NSScreen.mainScreen().frame().size matches pynput's
+    # mouse coordinate range, which is what the heatmap is built from.
+    # Rewritten on every startup (and the agent restarts on wake), so
+    # the value follows the current monitor setup. Screen queries do
+    # not require Accessibility, so this works even when input capture
+    # is not yet permitted. Best-effort: any failure is non-fatal.
+    if not _HAS_PYOBJC or NSScreen is None:
+        return
+    try:
+        size = NSScreen.mainScreen().frame().size
+        Path("output").mkdir(exist_ok=True)
+        Path("output/display.json").write_text(
+            json.dumps({"width": int(size.width), "height": int(size.height)})
+        )
+        log.info("recorded display size %dx%d", int(size.width), int(size.height))
+    except Exception:
+        log.warning("could not record display size", exc_info=True)
+
+
 def main() -> None:
     # Logging goes to stderr so it does not corrupt the JSON event
     # stream on stdout when --sink stdout is used.
@@ -282,6 +307,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="StreamGuard input capture agent")
     parser.add_argument("--sink", choices=("stdout", "kafka"), default="stdout")
     args = parser.parse_args()
+
+    _record_display_size()
 
     flush = None
     if args.sink == "kafka":

@@ -3,15 +3,13 @@ import { Header } from "./components/Header";
 import { TodayTotals } from "./components/TodayTotals";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { MetricCards } from "./components/MetricCards";
-import { Heatmap } from "./components/Heatmap";
-import { HotspotsLeaderboard } from "./components/HotspotsLeaderboard";
 import { InputMixIndicator } from "./components/InputMixIndicator";
-import { RangeSelector } from "./components/RangeSelector";
 import { ActivityGauge } from "./components/ActivityGauge";
 import { SessionsList } from "./components/SessionsList";
-import { StalenessChip } from "./components/StalenessChip";
+import { MonthCalendar } from "./components/MonthCalendar";
+import { DayDetailPanel } from "./components/DayDetailPanel";
 import { usePolling } from "./usePolling";
-import { ACTIVITY_RANGES, filterByUser, parseUtc } from "./utils";
+import { filterByUser, parseUtc } from "./utils";
 
 // Top-level wiring. Polling intervals match how often each
 // upstream output changes:
@@ -30,22 +28,17 @@ import { ACTIVITY_RANGES, filterByUser, parseUtc } from "./utils";
 // newest metric window otherwise. Deriving `effectiveUser` during
 // render avoids a setState-in-effect cascade.
 export default function App() {
-  const [range, setRange] = useState("1h");
-  const [activityRange, setActivityRange] = useState("1h");
   const [selectedUser, setSelectedUser] = useState(null);
+  // localDayKey ("YYYY-MM-DD") of the day the user is drilling into,
+  // or null when no day is selected. Driven by clicks in the
+  // MonthCalendar.
+  const [selectedDay, setSelectedDay] = useState(null);
 
-  const activityCfg = ACTIVITY_RANGES[activityRange];
-  const activityMinutes = activityCfg.bucketCount * activityCfg.bucketSizeMin;
-
-  // The 1h preset's poll interval is also the right cadence for the
-  // header/metric-card widgets that only ever read the newest minute.
-  const metrics = usePolling("/api/metrics", ACTIVITY_RANGES["1h"].pollMs);
-  const activityMetrics = usePolling(
-    `/api/metrics?minutes=${activityMinutes}`,
-    activityCfg.pollMs,
-  );
+  // The top Activity card always shows the last 60 minutes (5 s poll);
+  // there is no range selector anymore. This single /api/metrics poll
+  // feeds the header, the metric cards, and the Activity card.
+  const metrics = usePolling("/api/metrics", 5_000);
   const sessions = usePolling("/api/sessions", 30_000);
-  const heatmap = usePolling(`/api/heatmap?range=${range}`, 30_000);
   const baseline = usePolling("/api/baseline", 5 * 60_000);
   const batchStatus = usePolling("/api/batch_status", 30_000);
 
@@ -80,9 +73,7 @@ export default function App() {
   }, [metrics, users, selectedUser]);
 
   const metricsForUser = filterByUser(metrics, effectiveUser);
-  const activityMetricsForUser = filterByUser(activityMetrics, effectiveUser);
   const sessionsForUser = filterByUser(sessions, effectiveUser);
-  const heatmapForUser = filterByUser(heatmap, effectiveUser);
   const baselineForUser =
     baseline && effectiveUser
       ? baseline.find((b) => b.user === effectiveUser) ?? null
@@ -98,16 +89,12 @@ export default function App() {
           selectedUser={effectiveUser}
           onSelectUser={setSelectedUser}
         />
+        <section className="space-y-4">
+          <ActivityGauge metrics={metricsForUser} range="1h" />
+          <ActivityPanel metrics={metricsForUser} range="1h" />
+        </section>
         <TodayTotals sessions={sessionsForUser} />
         <MetricCards metrics={metricsForUser} baseline={baselineForUser} />
-        <section className="space-y-4">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h2 className="text-sm text-zinc-400">Activity</h2>
-            <RangeSelector value={activityRange} onChange={setActivityRange} />
-          </div>
-          <ActivityGauge metrics={activityMetricsForUser} range={activityRange} />
-          <ActivityPanel metrics={activityMetricsForUser} range={activityRange} />
-        </section>
         <InputMixIndicator
           latest={
             metricsForUser && metricsForUser.length > 0
@@ -115,23 +102,20 @@ export default function App() {
               : null
           }
         />
-        <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-baseline gap-3">
-              <h2 className="text-sm text-zinc-400">Spatial heatmaps</h2>
-              <StalenessChip lastRunIso={lastBatchRun} status={batchStatusName} />
-            </div>
-            <RangeSelector value={range} onChange={setRange} />
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Heatmap data={heatmapForUser} type="move" title="Movement" color="#3b82f6" />
-            <Heatmap data={heatmapForUser} type="click" title="Clicks" color="#ef4444" />
-          </div>
-          <HotspotsLeaderboard
-            heatmap={heatmapForUser}
-            lastRunIso={lastBatchRun}
-            status={batchStatusName}
+        <section className="space-y-4">
+          <MonthCalendar
+            sessions={sessionsForUser}
+            selectedDay={selectedDay}
+            onSelectDay={setSelectedDay}
           />
+          {selectedDay && (
+            <DayDetailPanel
+              sessions={sessionsForUser}
+              dayKey={selectedDay}
+              user={effectiveUser}
+              onClose={() => setSelectedDay(null)}
+            />
+          )}
         </section>
         <SessionsList
           sessions={sessionsForUser}

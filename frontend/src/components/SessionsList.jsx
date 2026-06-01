@@ -29,43 +29,54 @@ export function SessionsList({ sessions, lastRunIso, status }) {
         <SessionFatigueSparkline sessions={sessions} />
       </div>
       <div className="max-h-96 overflow-y-auto">
-        <div className="grid grid-cols-5 gap-4 text-xs text-zinc-500 pb-2 border-b border-zinc-700">
-          <div>Started</div>
-          <div>Duration</div>
-          <div>Keystrokes</div>
-          <div>Fatigue</div>
-          <div>Scale</div>
-        </div>
+        <SessionTableHeader />
         {rows.length === 0 && (
           <div className="text-sm text-zinc-500 py-4">
             no sessions yet - run the batch job
           </div>
         )}
-        {rows.map((s) => {
-          const start = parseUtc(s.session_start);
-          const end = parseUtc(s.session_end);
-          // start/end can be null if the backend ever emits a
-          // malformed timestamp. Without this guard the duration
-          // arithmetic produces NaN and the cell renders "NaN min".
-          const durationMin =
-            start && end
-              ? Math.max(1, Math.round((end - start) / 60000))
-              : null;
-
-          return (
-            <div
-              key={s.session_id}
-              className="grid grid-cols-5 gap-4 text-sm py-2 border-b border-zinc-700/50 text-zinc-200 items-center"
-            >
-              <div>{start ? start.toLocaleString() : "—"}</div>
-              <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
-              <div>{s.keystrokes_total}</div>
-              <FatigueCell s={s} />
-              <FatigueScale s={s} />
-            </div>
-          );
-        })}
+        {rows.map((s) => (
+          <SessionRow key={s.session_id} s={s} />
+        ))}
       </div>
+    </div>
+  );
+}
+
+// Column headers for the six-column session table. Exported so the
+// DayDetailPanel can reuse the exact same layout for its scoped
+// view of a single day's sessions.
+export function SessionTableHeader() {
+  return (
+    <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 pb-2 border-b border-zinc-700">
+      <div>Started</div>
+      <div>Duration</div>
+      <div>Keystrokes</div>
+      <div>Fatigue</div>
+      <div>Scale</div>
+      <div>Type</div>
+    </div>
+  );
+}
+
+// One session row. Exported alongside SessionTableHeader so the
+// DayDetailPanel renders rows identical to the SessionsList. start/
+// end can be null if the backend ever emits a malformed timestamp;
+// the guards keep the row from rendering "NaN min".
+export function SessionRow({ s }) {
+  const start = parseUtc(s.session_start);
+  const end = parseUtc(s.session_end);
+  const durationMin =
+    start && end ? Math.max(1, Math.round((end - start) / 60000)) : null;
+
+  return (
+    <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-zinc-700/50 text-zinc-200 items-center">
+      <div>{start ? start.toLocaleString() : "—"}</div>
+      <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
+      <div>{s.keystrokes_total}</div>
+      <FatigueCell s={s} />
+      <FatigueScale s={s} />
+      <SessionTypeCell s={s} />
     </div>
   );
 }
@@ -123,3 +134,42 @@ function FatigueScale({ s }) {
     </svg>
   );
 }
+
+// One of four session-type labels predicted by the offline Random
+// Forest (see streamguard/ml.py). The model picks each label by
+// taking the modal per-window prediction inside the session, and
+// the four classes come from fatigue_index quartiles - so the word
+// shown here matches how the model was trained, not a hand-tuned UI
+// threshold. Renders "—" if no model has been trained yet.
+function SessionTypeCell({ s }) {
+  const label = s.predicted_label;
+  if (!label) {
+    return (
+      <span className="text-zinc-500" aria-label="session type unavailable">
+        —
+      </span>
+    );
+  }
+  const meta = SESSION_TYPE_META[label] ?? {
+    text: label,
+    color: "text-zinc-300",
+  };
+  return (
+    <span
+      className={`${meta.color} font-medium`}
+      aria-label={`session type: ${meta.text}`}
+    >
+      {meta.text}
+    </span>
+  );
+}
+
+// Maps the raw label strings the model emits to the colors and
+// human-readable labels rendered in the table. Kept as a flat
+// object so adding a new class only takes one row.
+const SESSION_TYPE_META = {
+  productive: { text: "Productive", color: "text-green-400" },
+  normal: { text: "Normal", color: "text-zinc-300" },
+  tired: { text: "Tired", color: "text-amber-400" },
+  burnt_out: { text: "Burnt out", color: "text-red-400" },
+};

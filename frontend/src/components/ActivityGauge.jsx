@@ -7,9 +7,17 @@ import { ACTIVITY_RANGES, bucketizeWindows, isActiveBucket } from "../utils";
 // The bucket resolution comes from ACTIVITY_RANGES, so "% active"
 // means "share of the range's buckets that saw activity", at the
 // same granularity the strip is drawn.
-export function ActivityGauge({ metrics, range = "1h" }) {
+// `anchorMs` overrides the bucketizer end time (default = now) so the
+// gauge can summarize a historical day; `label` overrides the "Active
+// time · last 60 minutes" suffix for that same day view.
+export function ActivityGauge({ metrics, range = "1h", anchorMs, label }) {
   const cfg = ACTIVITY_RANGES[range] ?? ACTIVITY_RANGES["1h"];
-  const buckets = bucketizeWindows(metrics, cfg.bucketCount, cfg.bucketSizeMin);
+  const buckets = bucketizeWindows(
+    metrics,
+    cfg.bucketCount,
+    cfg.bucketSizeMin,
+    anchorMs ?? Date.now(),
+  );
   let activeBuckets = 0;
   for (const b of buckets) {
     if (isActiveBucket(b)) activeBuckets++;
@@ -20,7 +28,7 @@ export function ActivityGauge({ metrics, range = "1h" }) {
 
   const activeMin = activeBuckets * cfg.bucketSizeMin;
   const idleMin = inactiveBuckets * cfg.bucketSizeMin;
-  const rangeLabel = cfg.label.toLowerCase();
+  const rangeLabel = (label ?? cfg.label).toLowerCase();
 
   return (
     <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">

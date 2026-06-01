@@ -14,6 +14,11 @@ export function usePolling(url, intervalMs) {
   const [data, setData] = useState(null);
 
   useEffect(() => {
+    // A null/empty url means "nothing to fetch yet" (e.g. a day panel
+    // before its user is known). Skip cleanly rather than fetching
+    // "/null" and spamming 404s.
+    if (!url) return undefined;
+
     let cancelled = false;
 
     async function fetchOnce() {

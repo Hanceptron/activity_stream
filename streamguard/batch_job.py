@@ -11,6 +11,7 @@ import logging
 from datetime import timedelta
 from pathlib import Path
 
+import pandas as pd
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
@@ -20,13 +21,21 @@ EVENTS_PATH = "output/events"
 SESSIONS_PATH = "output/sessions"
 BASELINE_PATH = "output/baseline"
 HEATMAPS_PATH = "output/heatmaps"
+PER_WINDOW_PATH = "output/per_window"
+DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
+HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
+PREDICTIONS_PATH = "output/predictions.parquet"
 
 WINDOW_SIZE = "1 minute"
 SESSION_GAP_SECONDS = 5 * 60
 
 MIN_WINDOWS_FOR_FATIGUE = 5
 
-CELL_SIZE = 40
+# Heatmap grid resolution in screen pixels per cell. Smaller = finer
+# grid = sharper heatmap. 16px gives a ~240-wide grid on a 4K display,
+# enough detail to avoid the blocky/low-res look while keeping the
+# cell count renderable.
+CELL_SIZE = 16
 HEATMAP_PRESETS = [
     ("1h", 1),
     ("6h", 6),
@@ -187,6 +196,62 @@ def heatmap_for_range(events, hours, max_event_time):
     )
 
 
+def day_minute_metrics(events):
+    """One row per (day, one-minute window, user) with the four count
+    metrics. Same aggregation as per_window_metrics but keyed by the
+    calendar day instead of a session, so the frontend can pull a
+    single historical day's keystroke timeline. `day` is the local
+    calendar day (host timezone) via date_format, matching the
+    browser's localDayKey on a single-user machine.
+    """
+    is_kd = F.col("type") == "key_down"
+    ev = (
+        events
+        .withColumn("time_window", F.window(F.col("event_time"), WINDOW_SIZE))
+        .withColumn("day", F.date_format(F.col("event_time"), "yyyy-MM-dd"))
+    )
+    return (
+        ev.groupBy("day", "time_window", "user")
+        .agg(
+            F.count(F.when(is_kd, 1)).alias("keystrokes"),
+            F.count(
+                F.when(is_kd & F.col("key").isin(" ", "Key.space"), 1)
+            ).alias("words"),
+            F.count(
+                F.when(is_kd & F.col("key").isin("Key.backspace", "Key.delete"), 1)
+            ).alias("corrections"),
+            F.count(F.when(F.col("type") == "click", 1)).alias("clicks"),
+        )
+        .select(
+            "day",
+            F.col("time_window.start").alias("window_start"),
+            F.col("time_window.end").alias("window_end"),
+            "user",
+            "keystrokes",
+            "words",
+            "corrections",
+            "clicks",
+        )
+    )
+
+
+def heatmap_by_day(events):
+    """One row per (day, cell_x, cell_y, type, user) over the whole
+    archive. Same spatial bucketing as heatmap_for_range but with no
+    time cutoff and a `day` column, so the frontend can render the
+    movement + click heatmap for any single calendar day.
+    """
+    return (
+        events
+        .filter(F.col("type").isin("move", "click"))
+        .withColumn("day", F.date_format(F.col("event_time"), "yyyy-MM-dd"))
+        .withColumn("cell_x", (F.col("x") / CELL_SIZE).cast("int"))
+        .withColumn("cell_y", (F.col("y") / CELL_SIZE).cast("int"))
+        .groupBy("day", "cell_x", "cell_y", "type", "user")
+        .agg(F.count("*").alias("count"))
+    )
+
+
 def compute_all(spark):
     """Run one batch pass over the event archive: read events,
     compute per-session summaries, the per-user baseline, and a
@@ -218,6 +283,41 @@ def compute_all(spark):
             session_summary(per_window).write.mode("overwrite").parquet(SESSIONS_PATH)
             user_baseline(per_window).write.mode("overwrite").parquet(BASELINE_PATH)
 
+            # Flatten the time_window struct so the ML pipeline can read
+            # this dataset with vanilla pandas - it would otherwise need
+            # to know the struct schema. Written every batch so the
+            # training set always reflects the latest sessionization.
+            (
+                per_window
+                .select(
+                    "session_id",
+                    F.col("time_window.start").alias("window_start"),
+                    F.col("time_window.end").alias("window_end"),
+                    "user",
+                    "keystrokes",
+                    "words",
+                    "corrections",
+                    "clicks",
+                )
+                .write.mode("overwrite")
+                .parquet(PER_WINDOW_PATH)
+            )
+
+            # Per-day keystroke timeline and per-day spatial heatmap,
+            # both for the calendar drill-down. Single clean parquet
+            # dirs (unlike the raw event archive) so the pandas reader
+            # in the API reads them without hitting empty-file errors.
+            (
+                day_minute_metrics(events)
+                .write.mode("overwrite")
+                .parquet(DAY_MINUTE_METRICS_PATH)
+            )
+            (
+                heatmap_by_day(events)
+                .write.mode("overwrite")
+                .parquet(HEATMAP_BY_DAY_PATH)
+            )
+
             # One spatial heatmap per preset time range.
             max_event_time = events.agg(F.max("event_time").alias("m")).first()["m"]
             if max_event_time is not None:
@@ -231,6 +331,42 @@ def compute_all(spark):
             per_window.unpersist()
     finally:
         events.unpersist()
+
+    # ML inference is opt-in via the model file's mere existence. If the
+    # user has never run `python -m streamguard.ml train`, this no-ops
+    # and the rest of the batch is unaffected. Import is local so the
+    # batch job still works on a fresh checkout without scikit-learn.
+    _augment_sessions_with_predictions()
+
+
+def _augment_sessions_with_predictions() -> None:
+    # Write predictions to a sibling single-file parquet rather than
+    # back into the Spark-written `output/sessions/` directory. Two
+    # reasons: (1) pandas to_parquet on a directory path errors with
+    # IsADirectoryError; (2) overwriting a Spark output dir mid-read
+    # would race with API readers. The /api/sessions endpoint joins
+    # this file at read time when it exists.
+    try:
+        from streamguard.ml import predict_sessions
+    except ImportError as exc:
+        log.info("ml module not importable (%s); skipping inference", exc)
+        return
+
+    try:
+        preds = predict_sessions()
+    except Exception:
+        log.exception("ml inference failed; predictions file not updated")
+        return
+
+    if preds.empty:
+        return
+
+    preds.to_parquet(PREDICTIONS_PATH, index=False)
+    log.info(
+        "wrote %d session-level predictions to %s",
+        len(preds),
+        PREDICTIONS_PATH,
+    )
 
 
 def main():

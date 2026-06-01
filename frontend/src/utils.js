@@ -243,6 +243,74 @@ export function formatStaleness(end, now = Date.now()) {
   return text;
 }
 
+// "YYYY-MM-DD" from a Date using local-timezone components. Used as
+// the stable key for grouping sessions by day in the History
+// section. UTC would split a typing session that crosses local
+// midnight into two buckets the user doesn't think of as separate.
+export function localDayKey(date) {
+  if (!date) return null;
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// Group sessions by their local-day key. Returns a Map so callers
+// can iterate in insertion order or look up O(1). Sessions with no
+// session_start (shouldn't happen but defensive) are dropped.
+export function groupSessionsByDay(sessions) {
+  const byDay = new Map();
+  for (const s of sessions || []) {
+    const start = parseUtc(s?.session_start);
+    if (!start) continue;
+    const key = localDayKey(start);
+    if (!key) continue;
+    const list = byDay.get(key);
+    if (list) list.push(s);
+    else byDay.set(key, [s]);
+  }
+  return byDay;
+}
+
+// Millisecond timestamp at the end of a local calendar day given a
+// "YYYY-MM-DD" key. Used as the bucketizeWindows anchor (its `now`
+// argument) so a historical day's graph spans exactly that day:
+// bucketizeWindows(dayMetrics, 96, 15, endOfLocalDayMs(key)) yields
+// 96 fifteen-minute buckets covering [start-of-day, end-of-day].
+export function endOfLocalDayMs(dayKey) {
+  if (!dayKey) return Date.now();
+  const [y, m, d] = dayKey.split("-").map(Number);
+  // Day d+1 at 00:00 local is the exclusive end of day d.
+  return new Date(y, m - 1, d + 1).getTime();
+}
+
+// Pick the dominant predicted_label across a day's sessions,
+// weighted by each session's window_count (the number of one-minute
+// windows in that session, which is also its active typing time).
+// Long sessions therefore outweigh short ones - a 60-min "tired"
+// session beats a 2-min "productive" session for that day's rating.
+// Returns null if no session has a predicted_label yet (model not
+// trained) so callers can render a muted "no rating" state.
+export function ratingForDay(daySessions) {
+  if (!daySessions || daySessions.length === 0) return null;
+  const weights = {};
+  for (const s of daySessions) {
+    const label = s?.predicted_label;
+    if (!label) continue;
+    const w = s.window_count ?? 1;
+    weights[label] = (weights[label] ?? 0) + w;
+  }
+  let best = null;
+  let bestWeight = -Infinity;
+  for (const [label, w] of Object.entries(weights)) {
+    if (w > bestWeight) {
+      best = label;
+      bestWeight = w;
+    }
+  }
+  return best;
+}
+
 // Peak keystrokes-per-minute observed today across the supplied
 // metrics slice. NOTE: /api/metrics returns only the last 60 min,
 // so this is in practice "peak over the last hour" — callers should
