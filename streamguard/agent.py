@@ -363,6 +363,7 @@ def main() -> None:
     exit_requested = threading.Event()
 
     def on_sleep() -> None:
+        log.info("sleep notification received; flushing kafka before the socket dies")
         if flush is not None:
             try:
                 flush()

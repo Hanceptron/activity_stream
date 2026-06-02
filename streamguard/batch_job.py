@@ -15,6 +15,8 @@ import pandas as pd
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
+from streamguard.aggregations import event_count_exprs
+
 log = logging.getLogger("streamguard.batch_job")
 
 EVENTS_PATH = "output/events"
@@ -57,7 +59,6 @@ def build_session():
 
 def per_window_metrics(events):
     """One row per (session_id, time_window, user) with the four count metrics."""
-    is_kd = F.col("type") == "key_down"
 
     # Sessionize manually. Walking each user's events in event-time
     # order, a new session starts whenever the gap from the previous
@@ -96,16 +97,7 @@ def per_window_metrics(events):
 
     return (
         events_w.groupBy("session_id", "time_window", "user")
-        .agg(
-            F.count(F.when(is_kd, 1)).alias("keystrokes"),
-            F.count(
-                F.when(is_kd & F.col("key").isin(" ", "Key.space"), 1)
-            ).alias("words"),
-            F.count(
-                F.when(is_kd & F.col("key").isin("Key.backspace", "Key.delete"), 1)
-            ).alias("corrections"),
-            F.count(F.when(F.col("type") == "click", 1)).alias("clicks"),
-        )
+        .agg(*event_count_exprs())
     )
 
 
@@ -204,7 +196,6 @@ def day_minute_metrics(events):
     calendar day (host timezone) via date_format, matching the
     browser's localDayKey on a single-user machine.
     """
-    is_kd = F.col("type") == "key_down"
     ev = (
         events
         .withColumn("time_window", F.window(F.col("event_time"), WINDOW_SIZE))
@@ -212,16 +203,7 @@ def day_minute_metrics(events):
     )
     return (
         ev.groupBy("day", "time_window", "user")
-        .agg(
-            F.count(F.when(is_kd, 1)).alias("keystrokes"),
-            F.count(
-                F.when(is_kd & F.col("key").isin(" ", "Key.space"), 1)
-            ).alias("words"),
-            F.count(
-                F.when(is_kd & F.col("key").isin("Key.backspace", "Key.delete"), 1)
-            ).alias("corrections"),
-            F.count(F.when(F.col("type") == "click", 1)).alias("clicks"),
-        )
+        .agg(*event_count_exprs())
         .select(
             "day",
             F.col("time_window.start").alias("window_start"),
@@ -269,14 +251,22 @@ def compute_all(spark):
     guard ``spark.read.parquet`` raises ``AnalysisException`` and the
     scheduler tick fails with a misleading traceback every 5 min.
     """
-    if not Path(EVENTS_PATH).exists():
+    if not Path(EVENTS_PATH).exists() or not any(Path(EVENTS_PATH).glob("*.parquet")):
         log.warning(
-            "event archive at %s does not exist yet; skipping batch run",
+            "event archive at %s has no parquet files yet; skipping batch run",
             EVENTS_PATH,
         )
         return
 
-    events = spark.read.parquet(EVENTS_PATH).cache()
+    # Read the part files directly (glob) instead of the directory root.
+    # Reading the root makes Spark honor the Structured Streaming commit
+    # log (output/events/_spark_metadata), which only references files
+    # written since the last streaming checkpoint reset - so a reset
+    # (Kafka offset change, etc.) silently orphans every earlier part file
+    # and the batch loses weeks of history. A plain glob always reads the
+    # whole archive. (Trade-off: it lists every part file each run; if the
+    # file count grows large, add a streaming trigger + periodic compaction.)
+    events = spark.read.parquet(f"{EVENTS_PATH}/*.parquet").cache()
     try:
         per_window = per_window_metrics(events).cache()
         try:

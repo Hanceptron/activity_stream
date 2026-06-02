@@ -196,14 +196,6 @@ export function formatBucketTime(date, totalMinutes) {
   return `${_istDayMonth.format(date).replace(/\//g, ".")} ${formatClock(date)}`;
 }
 
-// Corrections per keystroke for a single 1-minute window. Returns 0
-// (not NaN) when keystrokes is 0; using Math.max(_, 1) keeps the
-// expression branchless and safe.
-export function correctionRatio(window) {
-  if (!window) return 0;
-  return (window.corrections ?? 0) / Math.max(window.keystrokes ?? 0, 1);
-}
-
 // Share of input that was mouse clicks vs keyboard keys for a
 // single window. Returns null when both are zero — the caller
 // (InputMixIndicator) treats that as "no input" rather than 0%.
@@ -265,16 +257,6 @@ export function isActiveNow(metrics, now = Date.now(), maxAgeMs = 2 * 60 * 1000)
     if (t != null && t > newestEnd) newestEnd = t;
   }
   return newestEnd !== -Infinity && now - newestEnd < maxAgeMs;
-}
-
-// Top-k cells of a given type from /api/heatmap, sorted by count.
-// Used by the HotspotsLeaderboard. Defensive against missing data.
-export function pickHotspots(heatmap, type, k = 5) {
-  if (!heatmap) return [];
-  return heatmap
-    .filter((c) => c && c.type === type)
-    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
-    .slice(0, k);
 }
 
 // Filter /api/sessions down to sessions started on or after today's

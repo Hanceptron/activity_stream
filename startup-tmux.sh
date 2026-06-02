@@ -6,11 +6,11 @@
 # each in its own window so logs stay separated.
 #
 # The Mac is allowed to sleep and lock normally — no `caffeinate`
-# wrappers. Every process is wrapped in a `while true` restart loop
-# so a hard crash recovers within 5 seconds. The agent additionally
-# subscribes to macOS NSWorkspaceDidWakeNotification and re-creates
-# its pynput listeners on wake (pynput's event tap is killed by the
-# kernel during sleep); the loop is a safety net for harder failures.
+# wrappers. Every process is wrapped in run-with-backoff.sh, which
+# restarts it on exit with exponential backoff (5s up to 60s). On macOS
+# wake the agent EXITS on NSWorkspaceDidWakeNotification (pynput's event
+# tap is silently killed during sleep and cannot be rebuilt in-process),
+# so the backoff loop respawns a fresh interpreter with a working tap.
 #
 # Usage:
 #   ./startup-tmux.sh                       # start everything detached
@@ -66,36 +66,26 @@ docker exec streamguard-kafka /opt/kafka/bin/kafka-topics.sh \
   --topic events.raw \
   --partitions 1 --replication-factor 1 >/dev/null
 
-# If the streaming checkpoint claims a Kafka offset higher than what
-# the broker actually has, the next streaming startup throws
-# "Some data may have been lost" and crashes forever. This happens
-# whenever Kafka data was wiped (docker compose down recreates the
-# container without a persistent volume). Detect and wipe the stale
-# checkpoint so the next streaming startup begins fresh from
-# startingOffsets=latest. We leave output/metrics + output/events
-# parquet alone - those are durable derived data and the dot already
-# ignores anything older than its freshness threshold.
-ckpt_off=$(cat output/checkpoint/metrics/offsets/$(ls output/checkpoint/metrics/offsets/ 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1) 2>/dev/null \
-  | grep '"events.raw"' | sed -E 's/.*"0":([0-9]+).*/\1/')
-kafka_hw=$(docker exec streamguard-kafka /opt/kafka/bin/kafka-get-offsets.sh \
-  --bootstrap-server localhost:9092 --topic events.raw 2>/dev/null \
-  | awk -F: '{print $3}')
-if [[ -n "$ckpt_off" && -n "$kafka_hw" && "$ckpt_off" -gt "$kafka_hw" ]]; then
-  echo "checkpoint offset $ckpt_off > kafka high-water $kafka_hw; wiping output/checkpoint"
-  rm -rf output/checkpoint output/metrics/_spark_metadata output/events/_spark_metadata
-fi
+# NOTE: a stale-checkpoint wipe used to live here - on a Kafka offset
+# mismatch it ran `rm -rf output/checkpoint output/{metrics,events}/_spark_metadata`.
+# That deleted the Structured Streaming commit logs, which orphaned every
+# event part file written before the wipe and made the batch silently drop
+# weeks of history. It has been removed: streaming_job.py now sets
+# failOnDataLoss=false (the Kafka source resets to available offsets instead
+# of crashing on a mismatch), and batch_job.py reads output/events as plain
+# parquet, independent of the commit log. Never delete _spark_metadata.
 
 # Kill any previous session so this script is idempotent.
 tmux kill-session -t streamguard 2>/dev/null
 
 tmux new-session -d -s streamguard -n agent \
-  "bash -c 'while true; do uv run python -m streamguard.agent --sink kafka; echo \"[\$(date)] agent exited, restarting in 5s...\"; sleep 5; done'"
+  "$ROOT/run-with-backoff.sh uv run python -m streamguard.agent --sink kafka"
 
 tmux new-window -t streamguard -n streaming \
-  "bash -c 'while true; do uv run python -m streamguard.streaming_job; echo \"[\$(date)] streaming exited, restarting in 5s...\"; sleep 5; done'"
+  "$ROOT/run-with-backoff.sh uv run python -m streamguard.streaming_job"
 
 tmux new-window -t streamguard -n backend \
-  "bash -c 'while true; do uv run uvicorn streamguard.api:app --reload; echo \"[\$(date)] backend exited, restarting in 5s...\"; sleep 5; done'"
+  "$ROOT/run-with-backoff.sh uv run uvicorn streamguard.api:app --reload"
 
 tmux new-window -t streamguard -n frontend \
   "cd $ROOT/frontend && npm run dev"

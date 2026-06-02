@@ -13,12 +13,13 @@ when the output column set changes. Delete that directory before
 restart. The events checkpoint is unaffected.
 """
 
+import logging
+import time
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
-    count,
     from_json,
-    when,
     window,
 )
 from pyspark.sql.types import (
@@ -28,6 +29,10 @@ from pyspark.sql.types import (
     StringType,
     StructType,
 )
+
+from streamguard.aggregations import event_count_exprs
+
+log = logging.getLogger("streamguard.streaming_job")
 
 KAFKA_BOOTSTRAP = "localhost:9092"
 KAFKA_TOPIC = "events.raw"
@@ -83,6 +88,10 @@ def event_schema():
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     spark = build_session()
     spark.sparkContext.setLogLevel("WARN")
 
@@ -92,6 +101,12 @@ def main():
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe", KAFKA_TOPIC)
         .option("startingOffsets", "latest")
+        # Survive a wiped/recreated Kafka (e.g. host sleep-wake): when the
+        # checkpoint's offset is past what the broker still has, reset to
+        # the earliest available offset and continue instead of crashing
+        # forever with "Some data may have been lost". Input events are
+        # cheap to lose; a permanent crash loop is not.
+        .option("failOnDataLoss", "false")
         .load()
     )
 
@@ -103,17 +118,9 @@ def main():
         .withWatermark("event_time", WATERMARK)
     )
 
-    is_kd = col("type") == "key_down"
     metrics = (
         parsed.groupBy(window(col("event_time"), WINDOW_DURATION), col("user"))
-        .agg(
-            count(when(is_kd, 1)).alias("keystrokes"),
-            count(when(is_kd & col("key").isin(" ", "Key.space"), 1)).alias("words"),
-            count(
-                when(is_kd & col("key").isin("Key.backspace", "Key.delete"), 1)
-            ).alias("corrections"),
-            count(when(col("type") == "click", 1)).alias("clicks"),
-        )
+        .agg(*event_count_exprs())
         .select(
             col("window.start").alias("window_start"),
             col("window.end").alias("window_end"),
@@ -125,12 +132,19 @@ def main():
         )
     )
 
+    # Triggers bound the file-creation rate. Without them the default
+    # (process-as-fast-as-possible) writes a part file every micro-batch
+    # - sub-second under input - which is what produced the 100k+ tiny
+    # files. Metrics feeds the live dashboard (2-min freshness window) so
+    # 30 s keeps the dot fresh; events only feed the 5-min batch, so 60 s
+    # is plenty and halves their file count.
     metrics_query = (
         metrics.writeStream
         .format("parquet")
         .option("path", METRICS_PATH)
         .option("checkpointLocation", METRICS_CHECKPOINT)
         .outputMode("append")
+        .trigger(processingTime="30 seconds")
         .start()
     )
 
@@ -140,10 +154,32 @@ def main():
         .option("path", EVENTS_PATH)
         .option("checkpointLocation", EVENTS_CHECKPOINT)
         .outputMode("append")
+        .trigger(processingTime="60 seconds")
         .start()
     )
 
-    spark.streams.awaitAnyTermination()
+    queries = [metrics_query, events_query]
+    try:
+        # Liveness poll instead of a bare awaitAnyTermination() that
+        # blocks forever. If a query fails - or the Spark RPC dies on a
+        # host sleep, leaving the JVM up but unresponsive - the next poll
+        # flips isActive or raises across the Py4J bridge, so this process
+        # EXITS and the outer restart loop respawns a clean interpreter
+        # instead of lingering as a zombie that produces nothing.
+        while all(q.isActive for q in queries):
+            time.sleep(10)
+        for q in queries:
+            exc = q.exception() if not q.isActive else None
+            if exc is not None:
+                log.error("streaming query failed: %s", exc)
+        log.warning("a streaming query is no longer active; exiting for respawn")
+    finally:
+        for q in queries:
+            try:
+                q.stop()
+            except Exception:
+                log.exception("error stopping streaming query")
+        spark.stop()
 
 
 if __name__ == "__main__":

@@ -93,6 +93,32 @@ def _quartile_labels(fatigue_index: pd.Series) -> pd.Series:
     ).astype(str)
 
 
+def _add_window_features(windows: pd.DataFrame) -> pd.DataFrame:
+    """Add the model's per-window FEATURES to a windows frame, in a
+    stable order. Shared by training (``_build_window_features``) and
+    inference (``predict_sessions``) so the feature definitions can
+    never drift between the two. Expects the raw per-window counts plus
+    a joined ``window_count`` column.
+
+    The ``clip(lower=1)`` denominators avoid divide-by-zero on idle
+    windows where keystrokes=0 but the row was still materialized
+    because the user clicked or moved.
+    """
+    windows = windows.sort_values(
+        ["session_id", "user", "window_start"]
+    ).reset_index(drop=True)
+    windows["window_idx"] = windows.groupby(["session_id", "user"]).cumcount()
+    windows["session_progress"] = windows["window_idx"] / windows[
+        "window_count"
+    ].clip(lower=1)
+    windows["correction_ratio"] = windows["corrections"] / windows[
+        "keystrokes"
+    ].clip(lower=1)
+    denom = (windows["keystrokes"] + windows["clicks"]).clip(lower=1)
+    windows["click_ratio"] = windows["clicks"] / denom
+    return windows
+
+
 def _build_window_features() -> pd.DataFrame:
     """Join per-window aggregates with their parent session label.
 
@@ -127,23 +153,7 @@ def _build_window_features() -> pd.DataFrame:
         label_lookup, left_on=["session_id", "user"], right_index=True, how="inner"
     )
 
-    windows = windows.sort_values(["session_id", "user", "window_start"]).reset_index(
-        drop=True
-    )
-    windows["window_idx"] = windows.groupby(["session_id", "user"]).cumcount()
-    windows["session_progress"] = windows["window_idx"] / windows["window_count"].clip(
-        lower=1
-    )
-
-    # max(_, 1) avoids divide-by-zero on idle windows where keystrokes=0
-    # but the row still got materialized because the user clicked or
-    # moved. Same trick as frontend/src/utils.js:correctionRatio.
-    windows["correction_ratio"] = windows["corrections"] / windows["keystrokes"].clip(
-        lower=1
-    )
-    denom = (windows["keystrokes"] + windows["clicks"]).clip(lower=1)
-    windows["click_ratio"] = windows["clicks"] / denom
-    return windows
+    return _add_window_features(windows)
 
 
 @dataclass
@@ -306,18 +316,7 @@ def predict_sessions() -> pd.DataFrame:
         ["session_id", "user", "window_count"]
     ]
     windows = windows.merge(sessions, on=["session_id", "user"], how="inner")
-    windows = windows.sort_values(["session_id", "user", "window_start"]).reset_index(
-        drop=True
-    )
-    windows["window_idx"] = windows.groupby(["session_id", "user"]).cumcount()
-    windows["session_progress"] = windows["window_idx"] / windows["window_count"].clip(
-        lower=1
-    )
-    windows["correction_ratio"] = windows["corrections"] / windows["keystrokes"].clip(
-        lower=1
-    )
-    denom = (windows["keystrokes"] + windows["clicks"]).clip(lower=1)
-    windows["click_ratio"] = windows["clicks"] / denom
+    windows = _add_window_features(windows)
 
     windows["predicted_window_label"] = model.predict(windows[features])
 

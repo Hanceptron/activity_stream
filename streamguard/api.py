@@ -51,7 +51,11 @@ DISPLAY_PATH = "output/display.json"
 # sane on a fresh checkout.
 DEFAULT_DISPLAY = {"width": 1728, "height": 1117}
 
-SESSIONS_LIMIT = 50
+# The 8-week history calendar and the day drill-down are both built from
+# /api/sessions, so this must span the whole calendar window, not just a
+# recent handful. 2000 is months of typical use; the payload stays small
+# (a dozen scalar fields per session).
+SESSIONS_LIMIT = 2000
 HEATMAP_RANGES = {"1h", "6h", "1d", "3d", "1w"}
 REFRESH_INTERVAL_SEC = 300  # 5 min
 
@@ -115,15 +119,21 @@ def _run_batch(spark) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Build a long-lived Spark session, run the batch once
-    synchronously, then schedule it every REFRESH_INTERVAL_SEC.
-    Spark is torn down on shutdown.
+    """Build a long-lived Spark session and schedule the batch every
+    REFRESH_INTERVAL_SEC, kicking the first run off a couple of seconds
+    AFTER startup rather than synchronously. Spark is torn down on
+    shutdown.
+
+    The first batch used to run synchronously here, which blocked
+    uvicorn from accepting connections for the ~60-120 s it takes - so
+    after every respawn (e.g. post-wake) the dashboard was unreachable
+    for that whole window. Yielding first lets the API serve the
+    existing parquet immediately; the scheduler fills in fresh data a
+    few seconds later (batch_status reads "idle" until the first run
+    completes).
     """
     spark = build_session()
     spark.sparkContext.setLogLevel("WARN")
-    # First run blocks until done so /api/batch_status returns a
-    # real last_run on the first poll and the dashboard isn't stale.
-    _run_batch(spark)
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(
@@ -133,7 +143,10 @@ async def lifespan(app: FastAPI):
         args=[spark],
         max_instances=1,  # skip tick if previous run is still in progress
         coalesce=True,    # collapse multiple missed ticks into one run
-        next_run_time=datetime.now() + timedelta(seconds=REFRESH_INTERVAL_SEC),
+        # First run ~2 s after startup (off the uvicorn startup path), not
+        # one full interval later, so fresh data lands quickly without
+        # blocking the dashboard from coming up.
+        next_run_time=datetime.now() + timedelta(seconds=2),
     )
     scheduler.start()
     try:
@@ -293,6 +306,43 @@ def get_batch_status() -> dict:
         "last_run": last_run.isoformat() if last_run else None,
         "status": status,
         "error": error,
+    }
+
+
+@app.get("/api/health")
+def get_health() -> dict:
+    """One-glance liveness/freshness snapshot for diagnosing flaky
+    sleep/wake episodes. ``metrics_age_seconds`` is how long ago the
+    freshest per-minute window ended (the capture + streaming path);
+    ``streaming_fresh`` mirrors the dashboard's 2-minute live threshold.
+    ``batch_*`` reflects the in-process batch scheduler.
+    """
+    now = pd.Timestamp.now("UTC").tz_localize(None)
+    metrics_age = None
+    df = _read_parquet(METRICS_PATH)
+    if not df.empty and "window_end" in df.columns:
+        newest = pd.to_datetime(df["window_end"]).max()
+        if pd.notna(newest):
+            metrics_age = float((now - newest).total_seconds())
+
+    with batch_state_lock:
+        last_run = batch_state.last_run
+        status = batch_state.last_status
+        error = batch_state.last_error
+    batch_age = (
+        (datetime.now(timezone.utc) - last_run).total_seconds()
+        if last_run
+        else None
+    )
+
+    return {
+        "now": now.isoformat(),
+        "metrics_age_seconds": metrics_age,
+        "streaming_fresh": metrics_age is not None and metrics_age < 120,
+        "batch_last_run": last_run.isoformat() if last_run else None,
+        "batch_age_seconds": batch_age,
+        "batch_status": status,
+        "batch_error": error,
     }
 
 

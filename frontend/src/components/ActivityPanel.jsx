@@ -1,4 +1,5 @@
 import { ACTIVITY_RANGES, bucketizeWindows } from "../utils";
+import { useNow } from "../useNow";
 import { IdleStrip } from "./IdleStrip";
 import { MetricsChart } from "./MetricsChart";
 
@@ -15,12 +16,13 @@ import { MetricsChart } from "./MetricsChart";
 // historical day's panel spans that day instead of the trailing
 // window. `label` overrides the card title for the same reason.
 export function ActivityPanel({ metrics, range = "1h", anchorMs, label }) {
+  const now = useNow();
   const cfg = ACTIVITY_RANGES[range] ?? ACTIVITY_RANGES["1h"];
   const buckets = bucketizeWindows(
     metrics,
     cfg.bucketCount,
     cfg.bucketSizeMin,
-    anchorMs ?? Date.now(),
+    anchorMs ?? now,
   );
   const totalMinutes = cfg.bucketCount * cfg.bucketSizeMin;
 

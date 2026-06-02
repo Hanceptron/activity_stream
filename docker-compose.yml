@@ -18,6 +18,12 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Persist the KRaft log dir to the named volume below so a container
+      # recreate / host sleep-wake does not wipe Kafka data and invalidate
+      # the streaming job's checkpoint offsets.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
       # `kafka-broker-api-versions` is bundled with the image and
       # returns quickly when the broker is listening. Used both by
@@ -28,3 +34,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+
+volumes:
+  kafka-data:

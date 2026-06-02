@@ -3,15 +3,16 @@
 #
 # Starts the backend (FastAPI on :8000, owns the batch scheduler
 # and a long-lived Spark session) and the frontend dev server (Vite
-# on :5173). The backend is wrapped in a `while true` loop so that
-# if its Spark session dies (e.g. after a sleep/wake cycle), it
-# auto-restarts within 5 seconds without manual intervention.
+# on :5173). The backend is wrapped in run-with-backoff.sh so that if
+# its Spark session dies (e.g. after a sleep/wake cycle) it auto-restarts
+# with exponential backoff (5s up to 60s), without manual intervention.
 #
 # The Mac is allowed to sleep and lock normally — no `caffeinate`
 # wrappers. The recording agent and streaming job (started by
 # `startup-tmux.sh`) each recover from sleep/wake on their own; the
-# agent re-creates its pynput listeners on macOS wake notifications,
-# and Spark's restart loop catches the RPC death.
+# agent EXITS on macOS wake notifications so a fresh interpreter
+# respawns with a working event tap, and the backoff loop catches the
+# Spark RPC death.
 #
 # Ctrl+C cleans both children up.
 
@@ -31,14 +32,8 @@ trap cleanup INT TERM
 
 cd "$ROOT"
 
-echo "[backend]  http://localhost:8000   (FastAPI, auto-restart on death)"
-bash -c '
-  while true; do
-    uv run uvicorn streamguard.api:app --reload
-    echo "[$(date)] backend exited, restarting in 5s..."
-    sleep 5
-  done
-' &
+echo "[backend]  http://localhost:8000   (FastAPI, auto-restart with backoff)"
+"$ROOT/run-with-backoff.sh" uv run uvicorn streamguard.api:app --reload &
 BACKEND_PID=$!
 
 echo "[frontend] http://localhost:5173   (Vite)"

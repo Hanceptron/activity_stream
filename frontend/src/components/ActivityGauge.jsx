@@ -1,4 +1,5 @@
 import { ACTIVITY_RANGES, bucketizeWindows, isActiveBucket } from "../utils";
+import { useNow } from "../useNow";
 
 // Aggregate of active vs idle time over the selected range. A
 // bucket counts as active if any keystrokes, words, corrections,
@@ -11,12 +12,13 @@ import { ACTIVITY_RANGES, bucketizeWindows, isActiveBucket } from "../utils";
 // gauge can summarize a historical day; `label` overrides the "Active
 // time · last 60 minutes" suffix for that same day view.
 export function ActivityGauge({ metrics, range = "1h", anchorMs, label }) {
+  const now = useNow();
   const cfg = ACTIVITY_RANGES[range] ?? ACTIVITY_RANGES["1h"];
   const buckets = bucketizeWindows(
     metrics,
     cfg.bucketCount,
     cfg.bucketSizeMin,
-    anchorMs ?? Date.now(),
+    anchorMs ?? now,
   );
   let activeBuckets = 0;
   for (const b of buckets) {
