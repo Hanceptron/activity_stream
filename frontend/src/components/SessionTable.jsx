@@ -1,6 +1,6 @@
 import { formatClock, formatSessionRange, parseUtc } from "../utils";
 
-// Shared session-table primitives: the six-column header and one row,
+// Shared session-table primitives: the five-column header and one row,
 // reused by the day drill-down (DayDetailPanel). Extracted from the
 // former SessionsList so the table outlives the removed "Recent
 // sessions" panel.
@@ -14,18 +14,17 @@ import { formatClock, formatSessionRange, parseUtc } from "../utils";
 // [-1, +1] with a zero-line marker so the user can rank rows at a
 // glance, not just read the number.
 
-// Column headers for the six-column session table. Exported so the
+// Column headers for the five-column session table. Exported so the
 // DayDetailPanel can reuse the exact same layout for its scoped view
 // of a single day's sessions.
 export function SessionTableHeader() {
   return (
-    <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 pb-2 border-b border-white/10">
+    <div className="grid grid-cols-5 gap-4 text-xs text-zinc-500 pb-2 border-b border-white/10">
       <div>Session</div>
       <div>Duration</div>
       <div>Keystrokes</div>
       <div>Fatigue</div>
       <div>Scale</div>
-      <div>Type</div>
     </div>
   );
 }
@@ -49,7 +48,7 @@ export function SessionRow({ s, live = false, now = 0 }) {
       : null;
 
   return (
-    <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-white/5 text-zinc-200 items-center">
+    <div className="grid grid-cols-5 gap-4 text-sm py-2 border-b border-white/5 text-zinc-200 items-center">
       <div className="flex items-center gap-2">
         {live ? (
           <>
@@ -64,7 +63,6 @@ export function SessionRow({ s, live = false, now = 0 }) {
       <div>{s.keystrokes_total}</div>
       <FatigueCell s={s} />
       <FatigueScale s={s} />
-      <SessionTypeCell s={s} />
     </div>
   );
 }
@@ -140,42 +138,3 @@ function FatigueScale({ s }) {
     </svg>
   );
 }
-
-// One of four session-type labels predicted by the offline Random
-// Forest (see streamguard/ml.py). The model picks each label by
-// taking the modal per-window prediction inside the session, and
-// the four classes come from fatigue_index quartiles - so the word
-// shown here matches how the model was trained, not a hand-tuned UI
-// threshold. Renders "—" if no model has been trained yet.
-function SessionTypeCell({ s }) {
-  const label = s.predicted_label;
-  if (!label) {
-    return (
-      <span className="text-zinc-500" aria-label="session type unavailable">
-        —
-      </span>
-    );
-  }
-  const meta = SESSION_TYPE_META[label] ?? {
-    text: label,
-    color: "text-zinc-300",
-  };
-  return (
-    <span
-      className={`${meta.color} font-medium`}
-      aria-label={`session type: ${meta.text}`}
-    >
-      {meta.text}
-    </span>
-  );
-}
-
-// Maps the raw label strings the model emits to the colors and
-// human-readable labels rendered in the table. Kept as a flat
-// object so adding a new class only takes one row.
-const SESSION_TYPE_META = {
-  productive: { text: "Productive", color: "text-green-400" },
-  normal: { text: "Normal", color: "text-zinc-300" },
-  tired: { text: "Tired", color: "text-amber-400" },
-  burnt_out: { text: "Burnt out", color: "text-red-400" },
-};

@@ -42,7 +42,6 @@ BASELINE_PATH = "output/baseline"
 HEATMAPS_PATH = "output/heatmaps"
 DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
 HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
-PREDICTIONS_PATH = "output/predictions.parquet"
 ML_METRICS_PATH = "output/models/metrics.json"
 DISPLAY_PATH = "output/display.json"
 
@@ -213,17 +212,6 @@ def get_sessions() -> list:
     df = _read_parquet(SESSIONS_PATH)
     if df.empty:
         return []
-    # If the ML predictions sidecar exists, left-join the per-session
-    # predicted-high-fatigue probabilities. Absent file = ML disabled,
-    # and the endpoint just returns sessions without the prediction
-    # columns - the dashboard renders normally either way.
-    preds_path = Path(PREDICTIONS_PATH)
-    if preds_path.exists():
-        try:
-            preds = pd.read_parquet(preds_path)
-            df = df.merge(preds, on=["session_id", "user"], how="left")
-        except Exception:
-            log.exception("failed to merge predictions; serving sessions without them")
     df = df.sort_values("session_start", ascending=False).head(SESSIONS_LIMIT)
     return _to_records(df)
 

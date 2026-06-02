@@ -11,7 +11,6 @@ import logging
 from datetime import timedelta
 from pathlib import Path
 
-import pandas as pd
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
@@ -26,7 +25,6 @@ HEATMAPS_PATH = "output/heatmaps"
 PER_WINDOW_PATH = "output/per_window"
 DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
 HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
-PREDICTIONS_PATH = "output/predictions.parquet"
 
 WINDOW_SIZE = "1 minute"
 SESSION_GAP_SECONDS = 5 * 60
@@ -321,42 +319,6 @@ def compute_all(spark):
             per_window.unpersist()
     finally:
         events.unpersist()
-
-    # ML inference is opt-in via the model file's mere existence. If the
-    # user has never run `python -m streamguard.ml train`, this no-ops
-    # and the rest of the batch is unaffected. Import is local so the
-    # batch job still works on a fresh checkout without scikit-learn.
-    _augment_sessions_with_predictions()
-
-
-def _augment_sessions_with_predictions() -> None:
-    # Write predictions to a sibling single-file parquet rather than
-    # back into the Spark-written `output/sessions/` directory. Two
-    # reasons: (1) pandas to_parquet on a directory path errors with
-    # IsADirectoryError; (2) overwriting a Spark output dir mid-read
-    # would race with API readers. The /api/sessions endpoint joins
-    # this file at read time when it exists.
-    try:
-        from streamguard.ml import predict_sessions
-    except ImportError as exc:
-        log.info("ml module not importable (%s); skipping inference", exc)
-        return
-
-    try:
-        preds = predict_sessions()
-    except Exception:
-        log.exception("ml inference failed; predictions file not updated")
-        return
-
-    if preds.empty:
-        return
-
-    preds.to_parquet(PREDICTIONS_PATH, index=False)
-    log.info(
-        "wrote %d session-level predictions to %s",
-        len(preds),
-        PREDICTIONS_PATH,
-    )
 
 
 def main():
