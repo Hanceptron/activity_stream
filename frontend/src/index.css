@@ -19,6 +19,10 @@ html,
 body,
 #root {
   height: 100%;
+  /* Disable the rubber-band / overscroll bounce at the top and bottom
+     of the page (and stop inner scrollers from chaining their scroll
+     to the page once they hit their own edge). */
+  overscroll-behavior: none;
 }
 
 body {
