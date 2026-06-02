@@ -1,4 +1,4 @@
-import { formatStaleness, getTodaysSessions, parseUtc } from "../utils";
+import { formatStaleness, getTodaysSessions, parseUtc, sumSessions } from "../utils";
 
 // Daily summary card aggregating sessions whose start falls within
 // today's local-time boundary. Reuses the existing /api/sessions
@@ -19,17 +19,7 @@ export function TodayTotals({ sessions }) {
   // stay consistent.
   const todays = getTodaysSessions(sessions);
 
-  const totals = todays.reduce(
-    (acc, s) => {
-      acc.keystrokes += s.keystrokes_total ?? 0;
-      acc.words += s.words_total ?? 0;
-      acc.corrections += s.corrections_total ?? 0;
-      acc.clicks += s.clicks_total ?? 0;
-      acc.activeMin += s.window_count ?? 0;
-      return acc;
-    },
-    { keystrokes: 0, words: 0, corrections: 0, clicks: 0, activeMin: 0 }
-  );
+  const totals = sumSessions(todays);
 
   // Staleness is measured against the newest session_end across ALL
   // sessions, not just today's, so a user opening the dashboard

@@ -1,97 +1,74 @@
-import { correctionRatio, zScore } from "../utils";
-import { BaselineBadge } from "./BaselineBadge";
+import { getTodaysSessions, sumSessions } from "../utils";
 
-// Five cards showing the most recent window's counts plus a derived
-// correction ratio. Each card optionally shows two extra readouts:
-// - "baseline avg" subtitle: the user's mean for this metric from
-//   /api/baseline, so the current value can be eyeballed.
-// - BaselineBadge in the corner: a z-score chip ("+1.6σ ↑") when the
-//   current window deviates noticeably from the baseline. Hidden
-//   when the deviation is small or when the std is unusable.
+// Five cards summarising TODAY at a glance. The four input metrics show
+// today's AVERAGE per active minute (today's total / today's active
+// minutes); the last card shows today's correction ratio. Everything is
+// computed from today's sessions - the same source as the Today panel -
+// so the numbers stay stable through the day rather than jumping with
+// the last single window. Each card keeps the user's all-time per-minute
+// "baseline avg" (from /api/baseline) underneath so today reads against
+// the norm.
 //
-// `direction` per card controls the badge color: keystrokes/words
-// are framed as higher-is-good, corrections as higher-is-bad, clicks
-// as neutral (no judgment color, only magnitude). The correction-
-// ratio card has no badge because the backend does not expose a
-// std for the ratio — inventing one would mislead.
-export function MetricCards({ metrics, baseline }) {
-  const latest =
-    metrics && metrics.length > 0 ? metrics[metrics.length - 1] : null;
-  // `baseline` is the single-user baseline object passed down from
-  // App (baselineForUser); null until the user is selected and
-  // /api/baseline has returned.
-  const userBaseline = baseline ?? null;
+// `sessions` arrives already filtered to the selected user (App applies
+// filterByUser). `baseline` is that user's baseline row, or null until
+// /api/baseline returns.
+export function MetricCards({ sessions, baseline }) {
+  const today = sumSessions(getTodaysSessions(sessions));
+  const perMin = (total) =>
+    today.activeMin > 0 ? Math.round(total / today.activeMin) : null;
+  const b = baseline ?? null;
 
   const cards = [
     {
       label: "Keystrokes per minute",
-      value: latest?.keystrokes,
+      value: perMin(today.keystrokes),
       meanKey: "keystrokes_mean",
-      stdKey: "keystrokes_std",
-      direction: "higher_is_good",
     },
     {
       label: "Words per minute",
-      value: latest?.words,
+      value: perMin(today.words),
       meanKey: "words_mean",
-      stdKey: "words_std",
-      direction: "higher_is_good",
     },
     {
-      label: "Corrections",
-      value: latest?.corrections,
+      label: "Corrections per minute",
+      value: perMin(today.corrections),
       meanKey: "corrections_mean",
-      stdKey: "corrections_std",
-      direction: "higher_is_bad",
     },
     {
-      label: "Clicks",
-      value: latest?.clicks,
+      label: "Clicks per minute",
+      value: perMin(today.clicks),
       meanKey: "clicks_mean",
-      stdKey: "clicks_std",
-      direction: "neutral",
     },
     {
       label: "Correction ratio",
-      // Derived from latest, formatted as a percentage. customValue
-      // and customBaseline let this card share the render path
-      // without bending the data-keyed descriptors above.
-      customValue: (l) =>
-        l ? `${(correctionRatio(l) * 100).toFixed(1)}%` : null,
-      customBaseline: (b) => {
-        if (!b || b.corrections_mean == null || !b.keystrokes_mean) return null;
-        const ratio = b.corrections_mean / Math.max(b.keystrokes_mean, 1);
-        return `baseline: ${(ratio * 100).toFixed(1)}%`;
-      },
-      direction: "higher_is_bad",
-      // No badge — see header comment.
+      value:
+        today.keystrokes > 0
+          ? `${((today.corrections / today.keystrokes) * 100).toFixed(1)}%`
+          : null,
+      // The ratio's baseline is derived from the two mean columns, not a
+      // single baseline field, so it carries its own line.
+      baselineLine:
+        b && b.corrections_mean != null && b.keystrokes_mean
+          ? `baseline: ${((b.corrections_mean / Math.max(b.keystrokes_mean, 1)) * 100).toFixed(1)}%`
+          : null,
     },
   ];
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
       {cards.map((c) => {
-        const value = c.customValue ? c.customValue(latest) : c.value;
-        const baselineMean = userBaseline ? userBaseline[c.meanKey] : null;
-        const baselineStd = userBaseline ? userBaseline[c.stdKey] : null;
-        const z = c.customValue
-          ? null
-          : zScore(c.value, baselineMean, baselineStd);
-        const baselineLine = c.customBaseline
-          ? c.customBaseline(userBaseline)
-          : baselineMean != null
-            ? `baseline avg: ${baselineMean.toFixed(1)}`
-            : null;
+        let baselineLine = null;
+        if (c.baselineLine !== undefined) {
+          baselineLine = c.baselineLine;
+        } else if (c.meanKey && b && b[c.meanKey] != null) {
+          baselineLine = `baseline avg: ${b[c.meanKey].toFixed(1)}`;
+        }
 
         return (
-          <div
-            key={c.label}
-            className="relative glass-panel"
-          >
-            <BaselineBadge z={z} direction={c.direction} label={c.label} />
+          <div key={c.label} className="glass-panel">
             <div className="text-sm text-zinc-400">{c.label}</div>
             <div className="text-3xl font-semibold text-zinc-100 mt-1">
-              {value ?? "—"}
+              {c.value ?? "—"}
             </div>
             {baselineLine && (
               <div className="text-xs text-zinc-500 mt-2">{baselineLine}</div>

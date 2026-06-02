@@ -1,55 +1,26 @@
-import { parseUtc } from "../utils";
-import { SessionFatigueSparkline } from "./SessionFatigueSparkline";
-import { StalenessChip } from "./StalenessChip";
+import { formatSessionRange, parseUtc } from "../utils";
 
-// Most-recent-first session table.
+// Shared session-table primitives: the six-column header and one row,
+// reused by the day drill-down (DayDetailPanel). Extracted from the
+// former SessionsList so the table outlives the removed "Recent
+// sessions" panel.
 //
 // Fatigue cell: an arrow glyph (↗ degrading / ↘ improving / – when
-// unreliable) is rendered alongside the number so the red/green
-// color is not the only signal. The aria-label echoes the value and
+// unreliable) is rendered alongside the number so the red/green color
+// is not the only signal. The aria-label echoes the value and
 // direction for screen readers.
 //
 // Scale column: a 60-px mini SVG bar showing fatigue clamped to
 // [-1, +1] with a zero-line marker so the user can rank rows at a
 // glance, not just read the number.
-//
-// StalenessChip in the header reports when the batch job last
-// computed these sessions; the SessionFatigueSparkline on the right
-// is a different signal (trend across recent reliable sessions).
-export function SessionsList({ sessions, lastRunIso, status }) {
-  const rows = (sessions || []).slice(0, 20);
-
-  return (
-    <div className="glass-panel">
-      <div className="flex items-center justify-between mb-3 gap-3">
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-sm text-zinc-400">Recent sessions</h2>
-          <StalenessChip lastRunIso={lastRunIso} status={status} />
-        </div>
-        <SessionFatigueSparkline sessions={sessions} />
-      </div>
-      <div className="max-h-96 overflow-y-auto">
-        <SessionTableHeader />
-        {rows.length === 0 && (
-          <div className="text-sm text-zinc-500 py-4">
-            no sessions yet - run the batch job
-          </div>
-        )}
-        {rows.map((s) => (
-          <SessionRow key={s.session_id} s={s} />
-        ))}
-      </div>
-    </div>
-  );
-}
 
 // Column headers for the six-column session table. Exported so the
-// DayDetailPanel can reuse the exact same layout for its scoped
-// view of a single day's sessions.
+// DayDetailPanel can reuse the exact same layout for its scoped view
+// of a single day's sessions.
 export function SessionTableHeader() {
   return (
     <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 pb-2 border-b border-white/10">
-      <div>Started</div>
+      <div>Session</div>
       <div>Duration</div>
       <div>Keystrokes</div>
       <div>Fatigue</div>
@@ -60,10 +31,10 @@ export function SessionTableHeader() {
 }
 
 // One session row. Exported alongside SessionTableHeader so the
-// DayDetailPanel renders rows identical to the SessionsList. start/
-// end can be null if the backend ever emits a malformed timestamp;
-// the guards keep the row from rendering "NaN min".
-export function SessionRow({ s }) {
+// DayDetailPanel renders rows identical across views. start/end can be
+// null if the backend ever emits a malformed timestamp; the guards
+// keep the row from rendering "NaN min".
+export function SessionRow({ s, live = false }) {
   const start = parseUtc(s.session_start);
   const end = parseUtc(s.session_end);
   const durationMin =
@@ -71,13 +42,34 @@ export function SessionRow({ s }) {
 
   return (
     <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-white/5 text-zinc-200 items-center">
-      <div>{start ? start.toLocaleString() : "—"}</div>
+      <div className="flex items-center gap-2">
+        <span>{formatSessionRange(start, end)}</span>
+        {live && <LiveBadge />}
+      </div>
       <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
       <div>{s.keystrokes_total}</div>
       <FatigueCell s={s} />
       <FatigueScale s={s} />
       <SessionTypeCell s={s} />
     </div>
+  );
+}
+
+// Pulsing marker for the session still in progress (its last activity is
+// within DayDetailPanel's live window). The aria-label carries the
+// meaning so the green dot is not the only signal.
+function LiveBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-green-400"
+      aria-label="live, in progress"
+    >
+      <span
+        className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"
+        aria-hidden="true"
+      />
+      live
+    </span>
   );
 }
 

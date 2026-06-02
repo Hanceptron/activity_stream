@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { groupSessionsByDay, localDayKey, ratingForDay } from "../utils";
+import { buildActivityRatings, formatLocalDay, localDayKey } from "../utils";
+import { StalenessChip } from "./StalenessChip";
 
 // 8 weeks x 7 days (Mon-Sun) GitHub-contributions style grid. Each
-// cell is one day, colored by ratingForDay() and clickable to drill
-// down. Reuses the same four labels (productive/normal/tired/
-// burnt_out) the model emits, so the color vocabulary is consistent
-// across SessionsList, the day drill-down, and this calendar.
+// cell is one day, colored by how much ACTIVITY happened that day
+// (active minutes = summed window_count) - not by the fatigue model.
+// Tiers come from buildActivityRatings(), which bins each day against
+// the median of the user's active days. One green hue at rising
+// intensity answers "which days did I work, and how hard."
 //
 // Computation is client-side off the sessions prop. No new endpoint.
 // A 60-second ticker keeps the "today" pointer up to date so the
@@ -14,22 +16,48 @@ const WEEKS = 8;
 const DAYS_IN_WEEK = 7;
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+// Single-color (green) intensity ramp, brighter = more active. The
+// hue is constant; only opacity rises, so it reads as one scale.
+// not_active reuses the muted recessed cell. `number` is the date
+// color that stays legible on each fill.
 const RATING_META = {
-  productive: { bg: "bg-green-400", text: "Productive" },
-  normal: { bg: "bg-zinc-400", text: "Normal" },
-  tired: { bg: "bg-amber-400", text: "Tired" },
-  burnt_out: { bg: "bg-red-400", text: "Burnt out" },
+  not_active: {
+    bg: "glass-inset",
+    text: "Not active",
+    number: "text-zinc-500",
+  },
+  below_average: {
+    bg: "bg-green-400/30",
+    text: "Below average",
+    number: "text-zinc-200",
+  },
+  standard: {
+    bg: "bg-green-400/60",
+    text: "Standard",
+    number: "text-zinc-100",
+  },
+  productive: {
+    bg: "bg-green-400",
+    text: "High-output",
+    number: "text-zinc-900",
+  },
 };
-const RATING_ORDER = ["productive", "normal", "tired", "burnt_out"];
+const RATING_ORDER = ["not_active", "below_average", "standard", "productive"];
 
-export function MonthCalendar({ sessions, selectedDay, onSelectDay }) {
+export function MonthCalendar({
+  sessions,
+  selectedDay,
+  onSelectDay,
+  lastRunIso,
+  status,
+}) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(id);
   }, []);
 
-  const byDay = useMemo(() => groupSessionsByDay(sessions), [sessions]);
+  const { byDay } = useMemo(() => buildActivityRatings(sessions), [sessions]);
 
   const cells = useMemo(() => {
     const today = new Date(now);
@@ -51,18 +79,12 @@ export function MonthCalendar({ sessions, selectedDay, onSelectDay }) {
         const cellDate = new Date(weekStart);
         cellDate.setDate(weekStart.getDate() + dow);
         const key = localDayKey(cellDate);
-        const daySessions = byDay.get(key) ?? [];
-        const rating = ratingForDay(daySessions);
-        const totalMin = daySessions.reduce(
-          (acc, s) => acc + (s.window_count ?? 0),
-          0,
-        );
+        const info = byDay.get(key);
         out.push({
           key,
           date: cellDate,
-          rating,
-          totalMin,
-          sessionCount: daySessions.length,
+          tier: info ? info.tier : "not_active",
+          totalMin: info ? info.totalMin : 0,
           isFuture: cellDate.getTime() > today.getTime(),
         });
       }
@@ -73,9 +95,12 @@ export function MonthCalendar({ sessions, selectedDay, onSelectDay }) {
   return (
     <div className="glass-panel">
       <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
-        <h2 className="text-sm text-zinc-400">
-          History (last {WEEKS} weeks)
-        </h2>
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-sm text-zinc-400">
+            History (last {WEEKS} weeks)
+          </h2>
+          <StalenessChip lastRunIso={lastRunIso} status={status} />
+        </div>
         <Legend />
       </div>
       <div className="flex gap-2">
@@ -102,26 +127,21 @@ export function MonthCalendar({ sessions, selectedDay, onSelectDay }) {
 }
 
 // Single calendar cell. Coloring rules:
-//  - has rating  -> the rating's solid background, dark text for the date number
-//  - no rating   -> bg-zinc-900 (darker than the container), muted zinc-500 date
-//  - future day  -> bg-zinc-900 + 30 % opacity, click disabled
+//  - active day -> the tier's green fill, intensity scaling with
+//    active minutes; date number from RATING_META.number
+//  - not active -> the muted glass-inset cell, zinc-500 date
+//  - future day -> bg-zinc-900 + 30 % opacity, click disabled
 // The ring shows selection. aria-label and the native title carry the
-// full readable summary so keyboard / screen-reader / hover users
-// all get the same information.
+// full readable summary so keyboard / screen-reader / hover users all
+// get the same information.
 function DayCell({ cell, isSelected, onClick }) {
-  const meta = cell.rating ? RATING_META[cell.rating] : null;
-  const bg = cell.isFuture
-    ? "bg-zinc-900 opacity-30"
-    : meta
-      ? meta.bg
-      : "glass-inset";
+  const meta = RATING_META[cell.tier];
+  const bg = cell.isFuture ? "bg-zinc-900 opacity-30" : meta.bg;
   const ring = isSelected ? "ring-2 ring-brand-cyan" : "";
 
   const summary = cell.isFuture
-    ? `${cell.date.toDateString()}: not yet`
-    : cell.rating
-      ? `${cell.date.toDateString()}: ${meta.text}, ${cell.sessionCount} session${cell.sessionCount === 1 ? "" : "s"}, ${cell.totalMin} active minute${cell.totalMin === 1 ? "" : "s"}`
-      : `${cell.date.toDateString()}: no sessions recorded`;
+    ? `${formatLocalDay(cell.date)}: not yet`
+    : `${formatLocalDay(cell.date)}: ${meta.text}, ${cell.totalMin} active minute${cell.totalMin === 1 ? "" : "s"}`;
 
   return (
     <button
@@ -136,38 +156,30 @@ function DayCell({ cell, isSelected, onClick }) {
       aria-label={summary}
       title={summary}
     >
-      <span
-        className={
-          cell.rating
-            ? "text-zinc-900 font-medium"
-            : "text-zinc-500"
-        }
-      >
+      <span className={`${meta.number} font-medium`}>
         {cell.date.getDate()}
       </span>
     </button>
   );
 }
 
+// Legend doubles as the intensity key: the four tiers in ascending
+// order read left-to-right as less -> more active, each labeled with
+// the name the user chose.
 function Legend() {
   return (
     <div className="flex items-center gap-3 text-[10px] text-zinc-400 flex-wrap">
-      {RATING_ORDER.map((label) => (
-        <div key={label} className="flex items-center gap-1">
+      <span className="text-zinc-500">Less</span>
+      {RATING_ORDER.map((tier) => (
+        <div key={tier} className="flex items-center gap-1">
           <span
-            className={`inline-block w-2.5 h-2.5 rounded ${RATING_META[label].bg}`}
+            className={`inline-block w-2.5 h-2.5 rounded ${RATING_META[tier].bg}`}
             aria-hidden="true"
           />
-          {RATING_META[label].text}
+          {RATING_META[tier].text}
         </div>
       ))}
-      <div className="flex items-center gap-1">
-        <span
-          className="inline-block w-2.5 h-2.5 rounded glass-inset"
-          aria-hidden="true"
-        />
-        No data
-      </div>
+      <span className="text-zinc-500">More</span>
     </div>
   );
 }

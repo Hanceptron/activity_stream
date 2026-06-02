@@ -26,7 +26,7 @@ body,
 }
 
 body {
-  background-color: #09090b;
+  background-color: #0b0910;
   color: #e4e4e7;
   color-scheme: dark;
   font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
@@ -42,8 +42,8 @@ body::before {
   inset: 0;
   z-index: -2;
   pointer-events: none;
-  background: #09090b url("/background.png") center center / cover no-repeat;
-  filter: blur(3px) brightness(0.55) saturate(1.05);
+  background: #0b0910 url("/background.png") center center / cover no-repeat;
+  filter: blur(2px) brightness(0.72) saturate(1.2);
   transform: scale(1.06); /* bleed the blur's soft edge off-screen */
   transform-origin: center;
 }
@@ -56,10 +56,10 @@ body::after {
   pointer-events: none;
   background:
     radial-gradient(120% 90% at 50% 38%,
-      rgba(9, 9, 11, 0.35) 0%,
-      rgba(9, 9, 11, 0.72) 55%,
-      rgba(9, 9, 11, 0.92) 100%),
-    linear-gradient(180deg, rgba(9, 9, 11, 0.55) 0%, rgba(9, 9, 11, 0.8) 100%);
+      rgba(13, 9, 24, 0.16) 0%,
+      rgba(12, 9, 22, 0.48) 55%,
+      rgba(11, 9, 18, 0.76) 100%),
+    linear-gradient(180deg, rgba(12, 9, 22, 0.34) 0%, rgba(11, 9, 18, 0.6) 100%);
 }
 
 @layer components {
@@ -67,14 +67,14 @@ body::after {
      `bg-zinc-800 rounded-lg p-4 border border-zinc-700`. */
   .glass-panel,
   .glass-panel-sm {
-    background-color: rgba(24, 24, 27, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(16px) saturate(1.3);
-    -webkit-backdrop-filter: blur(16px) saturate(1.3);
+    background-color: rgba(42, 28, 74, 0.6);
+    border: 1px solid rgba(167, 139, 250, 0.22);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.1),
       0 8px 30px rgba(0, 0, 0, 0.45),
-      0 0 28px -10px rgba(139, 92, 246, 0.5);
+      0 0 30px -8px rgba(139, 92, 246, 0.6);
   }
   .glass-panel {
     @apply rounded-xl p-4;
@@ -86,17 +86,17 @@ body::after {
   /* Small header pills (replaces the Header Chip's zinc treatment). */
   .glass-chip {
     @apply rounded-md px-2 py-1;
-    background-color: rgba(39, 39, 42, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(8px) saturate(1.2);
-    -webkit-backdrop-filter: blur(8px) saturate(1.2);
+    background-color: rgba(50, 34, 84, 0.6);
+    border: 1px solid rgba(167, 139, 250, 0.25);
+    backdrop-filter: blur(8px) saturate(1.3);
+    -webkit-backdrop-filter: blur(8px) saturate(1.3);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   /* Recessed inner surface (replaces inset bg-zinc-900 cells). */
   .glass-inset {
-    background-color: rgba(9, 9, 11, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: rgba(24, 16, 42, 0.6);
+    border: 1px solid rgba(167, 139, 250, 0.12);
   }
 
   /* Progress / strip track (replaces bg-zinc-700 fills). */
@@ -111,22 +111,22 @@ body::after {
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass-panel,
   .glass-panel-sm {
-    background-color: rgba(24, 24, 27, 0.92);
+    background-color: rgba(38, 26, 66, 0.94);
   }
   .glass-chip {
-    background-color: rgba(39, 39, 42, 0.92);
+    background-color: rgba(46, 31, 76, 0.94);
   }
 }
 
 @media (prefers-reduced-transparency: reduce) {
   .glass-panel,
   .glass-panel-sm {
-    background-color: rgba(24, 24, 27, 0.95);
+    background-color: rgba(38, 26, 66, 0.96);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
   .glass-chip {
-    background-color: rgba(39, 39, 42, 0.95);
+    background-color: rgba(46, 31, 76, 0.96);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }

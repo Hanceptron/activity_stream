@@ -9,34 +9,6 @@ export function parseUtc(s) {
   return new Date(s.endsWith("Z") ? s : s + "Z");
 }
 
-// Standard score for a single observation against a per-user
-// baseline. Returns null when any input is missing/NaN, or when std
-// is too small to be meaningful. Important: value === 0 is a valid
-// observation, so this uses explicit null/NaN checks rather than
-// truthy tests.
-//
-// Thin baselines (e.g. a freshly run batch job with only one window
-// per user) leave std as NaN; this guard hides downstream badges
-// rather than rendering "+Infσ".
-export function zScore(value, mean, std) {
-  if (value == null || mean == null || std == null) return null;
-  if (Number.isNaN(value) || Number.isNaN(mean) || Number.isNaN(std)) return null;
-  if (std < 1e-9) return null;
-  return (value - mean) / std;
-}
-
-// Format a z-score for display: one decimal, clamped to ±3, with a
-// leading sign and a σ suffix. Returns the formatted text plus an
-// arrow glyph used as the non-color a11y channel. Clamping prevents
-// an outlier from blowing out card layouts.
-export function formatZ(z) {
-  if (z == null) return null;
-  const clamped = Math.max(-3, Math.min(3, z));
-  const sign = clamped >= 0 ? "+" : "";
-  const arrow = z >= 0 ? "↑" : "↓";
-  return { text: `${sign}${clamped.toFixed(1)}σ`, arrow };
-}
-
 // Filter a list of API rows down to a single user. Preserves the
 // null distinction so callers can still tell pre-fetch (null) apart
 // from "no rows for this user" ([]). A null user passes the rows
@@ -131,21 +103,97 @@ export function bucketizeWindows(metrics, bucketCount, bucketSizeMin, now = Date
   return result;
 }
 
-// Tick / tooltip label for a single bucket. When the total range
-// fits in a day the date is implied by "today" and showing only
-// HH:MM keeps the axis terse; once the range spans multiple days
-// the date is needed to disambiguate the same hour appearing
-// repeatedly.
+// --- Display formatting ------------------------------------------------
+// Every user-facing date/time renders in Istanbul time, 24-hour clock,
+// DD.MM.YYYY. The Intl formatters are built once at module load (calling
+// .format() during render is pure). en-GB gives day-first ordering and
+// 24-hour times; we swap its "/" separators for ".".
+const ISTANBUL_TZ = "Europe/Istanbul";
+
+const _istDate = new Intl.DateTimeFormat("en-GB", {
+  timeZone: ISTANBUL_TZ,
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+});
+const _istTime = new Intl.DateTimeFormat("en-GB", {
+  timeZone: ISTANBUL_TZ,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+const _istWeekday = new Intl.DateTimeFormat("en-GB", {
+  timeZone: ISTANBUL_TZ,
+  weekday: "long",
+});
+const _istDayMonth = new Intl.DateTimeFormat("en-GB", {
+  timeZone: ISTANBUL_TZ,
+  day: "2-digit",
+  month: "2-digit",
+});
+
+// "DD.MM.YYYY" — Istanbul calendar day of a real instant.
+export function formatDate(date) {
+  if (!date) return "—";
+  return _istDate.format(date).replace(/\//g, ".");
+}
+
+// "HH:mm" — Istanbul wall-clock, 24-hour.
+export function formatClock(date) {
+  if (!date) return "—";
+  return _istTime.format(date);
+}
+
+// "DD.MM.YYYY HH:mm" — Istanbul, 24-hour. Used for session start/end.
+export function formatDateTime(date) {
+  if (!date) return "—";
+  return `${formatDate(date)} ${formatClock(date)}`;
+}
+
+// "DD.MM.YYYY HH:mm - HH:mm" for a session's start..end span (Istanbul).
+// The end shows just its time when it falls on the same calendar day;
+// if the session crosses midnight the end keeps its own date so the
+// span stays unambiguous. A null end (or start) degrades gracefully.
+export function formatSessionRange(start, end) {
+  if (!start) return "—";
+  const startStr = formatDateTime(start);
+  if (!end) return startStr;
+  const endStr =
+    formatDate(start) === formatDate(end) ? formatClock(end) : formatDateTime(end);
+  return `${startStr} - ${endStr}`;
+}
+
+// "Friday, 31.05.2026" from a "YYYY-MM-DD" day key. The numeric part is
+// the key reformatted; the weekday comes from a midday-UTC anchor so it
+// stays on the right calendar day regardless of the viewer's timezone.
+export function formatDayLabel(dayKey) {
+  if (!dayKey) return "—";
+  const [y, m, d] = dayKey.split("-").map(Number);
+  const ddmmyyyy = `${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}.${y}`;
+  const weekday = _istWeekday.format(new Date(Date.UTC(y, m - 1, d, 12)));
+  return `${weekday}, ${ddmmyyyy}`;
+}
+
+// "DD.MM.YYYY" from a Date that already represents a calendar day via its
+// local components (e.g. MonthCalendar cells built at local midnight) -
+// read straight from those components, no timezone conversion.
+export function formatLocalDay(date) {
+  if (!date) return "—";
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  return `${dd}.${mm}.${date.getFullYear()}`;
+}
+
+// Tick / tooltip label for a single bucket. When the total range fits in
+// a day the date is implied by "today" and showing only HH:mm keeps the
+// axis terse; once the range spans multiple days the date is prepended
+// to disambiguate the same hour appearing repeatedly. Istanbul, 24-hour.
 export function formatBucketTime(date, totalMinutes) {
   if (!date) return "";
   if (totalMinutes <= 1440) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return formatClock(date);
   }
-  return date.toLocaleString([], {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-  });
+  return `${_istDayMonth.format(date).replace(/\//g, ".")} ${formatClock(date)}`;
 }
 
 // Corrections per keystroke for a single 1-minute window. Returns 0
@@ -222,6 +270,23 @@ export function getTodaysSessions(sessions, now = Date.now()) {
   });
 }
 
+// Sum a set of sessions into input totals plus active minutes (one
+// window_count = one active minute). Shared by the Today panel and the
+// per-minute cards so both read off identical figures.
+export function sumSessions(sessions) {
+  return (sessions || []).reduce(
+    (acc, s) => {
+      acc.keystrokes += s.keystrokes_total ?? 0;
+      acc.words += s.words_total ?? 0;
+      acc.corrections += s.corrections_total ?? 0;
+      acc.clicks += s.clicks_total ?? 0;
+      acc.activeMin += s.window_count ?? 0;
+      return acc;
+    },
+    { keystrokes: 0, words: 0, corrections: 0, clicks: 0, activeMin: 0 },
+  );
+}
+
 // Render a timestamp as a relative-time string like "as of 3 min
 // ago", "as of 2 h ago", "as of 4 d ago". Appends "(batch job
 // pending)" once the gap exceeds 30 minutes — used both for the
@@ -284,31 +349,67 @@ export function endOfLocalDayMs(dayKey) {
   return new Date(y, m - 1, d + 1).getTime();
 }
 
-// Pick the dominant predicted_label across a day's sessions,
-// weighted by each session's window_count (the number of one-minute
-// windows in that session, which is also its active typing time).
-// Long sessions therefore outweigh short ones - a 60-min "tired"
-// session beats a 2-min "productive" session for that day's rating.
-// Returns null if no session has a predicted_label yet (model not
-// trained) so callers can render a muted "no rating" state.
-export function ratingForDay(daySessions) {
-  if (!daySessions || daySessions.length === 0) return null;
-  const weights = {};
-  for (const s of daySessions) {
-    const label = s?.predicted_label;
-    if (!label) continue;
-    const w = s.window_count ?? 1;
-    weights[label] = (weights[label] ?? 0) + w;
+// Activity tiers for the History grid, in ascending intensity.
+// Exported so MonthCalendar's order/legend and DayDetailPanel stay in
+// lockstep with the binning in buildActivityRatings.
+export const ACTIVITY_TIERS = [
+  "not_active",
+  "below_average",
+  "standard",
+  "productive",
+];
+
+// Build per-day ACTIVITY ratings for the History calendar.
+//
+// A day's "active minutes" = sum of its sessions' window_count (each
+// window is one minute that had real keyboard/mouse activity). Tiers
+// are RELATIVE to the user's typical active day: take the median
+// active-minutes over days with >0 activity, then bin each day by its
+// ratio to that median. Multiplicative bands - these adapt to the
+// user and do NOT force fixed proportions the way quartiles would:
+//   not_active     : 0 active minutes
+//   below_average  : > 0 and < 0.5 * median
+//   standard       : 0.5 * median .. 1.5 * median (inclusive)
+//   productive     : > 1.5 * median
+//
+// Edge cases: 0 active days -> median null -> every day not_active;
+// 1 active day -> ratio 1.0 -> standard; all-equal -> all standard.
+// Returns { byDay: Map<dayKey, {tier, totalMin}>, median }.
+export function buildActivityRatings(sessions) {
+  const byDaySessions = groupSessionsByDay(sessions);
+
+  // Pass 1: total active minutes per day.
+  const totals = new Map();
+  for (const [key, list] of byDaySessions) {
+    let sum = 0;
+    for (const s of list) sum += s.window_count ?? 0;
+    totals.set(key, sum);
   }
-  let best = null;
-  let bestWeight = -Infinity;
-  for (const [label, w] of Object.entries(weights)) {
-    if (w > bestWeight) {
-      best = label;
-      bestWeight = w;
-    }
+
+  // Median over days that had any activity.
+  const active = [...totals.values()].filter((v) => v > 0).sort((a, b) => a - b);
+  let median = null;
+  if (active.length) {
+    const mid = Math.floor(active.length / 2);
+    median =
+      active.length % 2 ? active[mid] : (active[mid - 1] + active[mid]) / 2;
   }
-  return best;
+
+  // Pass 2: bin each day against the median.
+  const byDay = new Map();
+  for (const [key, totalMin] of totals) {
+    byDay.set(key, { tier: tierFor(totalMin, median), totalMin });
+  }
+  return { byDay, median };
+}
+
+// Classify one day's active-minutes against the median of active days.
+function tierFor(totalMin, median) {
+  if (totalMin <= 0 || median == null || median <= 0) return "not_active";
+  const ratio = totalMin / median;
+  if (ratio < 0.5) return "below_average";
+  if (ratio <= 1.5) return "standard";
+  return "productive";
 }
 
 // Peak keystrokes-per-minute observed today across the supplied

@@ -64,7 +64,7 @@ export function Header({
         <img
           src="/logo.png"
           alt="Keyspark"
-          className="h-14 w-auto object-contain select-none mix-blend-screen drop-shadow-[0_0_18px_rgba(139,92,246,0.5)]"
+          className="h-14 w-auto object-contain select-none drop-shadow-[0_0_18px_rgba(139,92,246,0.5)]"
         />
         <UserSelector
           users={users}

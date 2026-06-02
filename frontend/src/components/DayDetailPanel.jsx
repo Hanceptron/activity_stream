@@ -1,12 +1,13 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  buildActivityRatings,
   endOfLocalDayMs,
+  formatDayLabel,
   groupSessionsByDay,
   parseUtc,
-  ratingForDay,
 } from "../utils";
 import { usePolling } from "../usePolling";
-import { SessionRow, SessionTableHeader } from "./SessionsList";
+import { SessionRow, SessionTableHeader } from "./SessionTable";
 import { ActivityGauge } from "./ActivityGauge";
 import { ActivityPanel } from "./ActivityPanel";
 import { Heatmap } from "./Heatmap";
@@ -22,28 +23,54 @@ import { Heatmap } from "./Heatmap";
 // days work and mouse data is available without touching the live
 // streaming path. Both are keyed by dayKey+user, so selecting a
 // different day refetches.
+// Day-level ACTIVITY tier shown in the header (text-color variant of
+// the MonthCalendar intensity ramp). Distinct from the per-session
+// fatigue labels in the rows below (SessionTable's SESSION_TYPE_META).
 const RATING_META = {
-  productive: { text: "Productive", color: "text-green-400" },
-  normal: { text: "Normal", color: "text-zinc-300" },
-  tired: { text: "Tired", color: "text-amber-400" },
-  burnt_out: { text: "Burnt out", color: "text-red-400" },
+  not_active: { text: "Not active", color: "text-zinc-500" },
+  below_average: { text: "Below average", color: "text-green-300/70" },
+  standard: { text: "Standard", color: "text-green-300" },
+  productive: { text: "High-output", color: "text-green-400" },
 };
 
+// A session counts as "live" when its last recorded activity is within
+// this window of now. The batch refreshes every 5 min and sessionization
+// closes a sitting after a 5-min input gap, so 6 min keeps an ongoing
+// session flagged right up to the next batch tick without mislabelling
+// one the user already walked away from.
+const LIVE_WINDOW_MS = 6 * 60_000;
+
 export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
+  // 30 s ticker so the "live" badge on an in-progress session clears
+  // itself once activity stops, even between data refreshes. Lazy init
+  // plus the interval callback keep Date.now() out of the render body.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const byDay = useMemo(() => groupSessionsByDay(sessions), [sessions]);
   const daySessions = byDay.get(dayKey) ?? [];
-  // Chronological for the detail view (oldest first), the opposite
-  // of the main SessionsList which is reverse-chronological. Reading
-  // a single day naturally happens forward in time.
+  // Newest first, so the current / most recent session sits at the top
+  // where the eye looks for "what am I doing now". Historical days then
+  // read latest-to-earliest, an acceptable trade.
   const sorted = [...daySessions].sort((a, b) => {
     const ta = parseUtc(a.session_start)?.getTime() ?? 0;
     const tb = parseUtc(b.session_start)?.getTime() ?? 0;
-    return ta - tb;
+    return tb - ta;
   });
-  const rating = ratingForDay(sorted);
-  const totalMin = sorted.reduce((acc, s) => acc + (s.window_count ?? 0), 0);
-  const dateLabel = formatDateLabel(dayKey);
-  const meta = rating ? RATING_META[rating] : null;
+  // Day-level activity tier, from the same builder the calendar uses
+  // (so the header word matches the cell the user just clicked).
+  const { byDay: activityByDay } = useMemo(
+    () => buildActivityRatings(sessions),
+    [sessions],
+  );
+  const dayActivity = activityByDay.get(dayKey);
+  const tier = dayActivity ? dayActivity.tier : "not_active";
+  const totalMin = dayActivity ? dayActivity.totalMin : 0;
+  const dateLabel = formatDayLabel(dayKey);
+  const meta = RATING_META[tier];
 
   // Per-day timeline + heatmap from the batch outputs. user is always
   // set when the panel renders (App passes effectiveUser), but guard
@@ -71,13 +98,9 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
       <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-baseline gap-3 flex-wrap">
           <h2 className="text-sm text-zinc-300">{dateLabel}</h2>
-          {meta ? (
-            <span className={`text-sm font-medium ${meta.color}`}>
-              {meta.text}
-            </span>
-          ) : (
-            <span className="text-xs text-zinc-500">no rating</span>
-          )}
+          <span className={`text-sm font-medium ${meta.color}`}>
+            {meta.text}
+          </span>
           <span className="text-xs text-zinc-500">
             {sorted.length} session{sorted.length === 1 ? "" : "s"} ·{" "}
             {totalMin} active minute{totalMin === 1 ? "" : "s"}
@@ -126,9 +149,11 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
         ) : (
           <div className="max-h-96 overflow-y-auto">
             <SessionTableHeader />
-            {sorted.map((s) => (
-              <SessionRow key={s.session_id} s={s} />
-            ))}
+            {sorted.map((s) => {
+              const end = parseUtc(s.session_end)?.getTime();
+              const live = end != null && nowMs - end < LIVE_WINDOW_MS;
+              return <SessionRow key={s.session_id} s={s} live={live} />;
+            })}
           </div>
         )}
       </div>
@@ -136,15 +161,3 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
   );
 }
 
-// "Friday, May 31, 2026" - rebuild the Date from local components so
-// the label matches what the user thinks of as that calendar day.
-function formatDateLabel(dayKey) {
-  const [y, m, d] = dayKey.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  return date.toLocaleDateString(undefined, {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}

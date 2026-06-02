@@ -5,7 +5,6 @@ import { ActivityPanel } from "./components/ActivityPanel";
 import { MetricCards } from "./components/MetricCards";
 import { InputMixIndicator } from "./components/InputMixIndicator";
 import { ActivityGauge } from "./components/ActivityGauge";
-import { SessionsList } from "./components/SessionsList";
 import { MonthCalendar } from "./components/MonthCalendar";
 import { DayDetailPanel } from "./components/DayDetailPanel";
 import { usePolling } from "./usePolling";
@@ -94,7 +93,7 @@ export default function App() {
           <ActivityPanel metrics={metricsForUser} range="1h" />
         </section>
         <TodayTotals sessions={sessionsForUser} />
-        <MetricCards metrics={metricsForUser} baseline={baselineForUser} />
+        <MetricCards sessions={sessionsForUser} baseline={baselineForUser} />
         <InputMixIndicator
           latest={
             metricsForUser && metricsForUser.length > 0
@@ -107,6 +106,8 @@ export default function App() {
             sessions={sessionsForUser}
             selectedDay={selectedDay}
             onSelectDay={setSelectedDay}
+            lastRunIso={lastBatchRun}
+            status={batchStatusName}
           />
           {selectedDay && (
             <DayDetailPanel
@@ -117,11 +118,6 @@ export default function App() {
             />
           )}
         </section>
-        <SessionsList
-          sessions={sessionsForUser}
-          lastRunIso={lastBatchRun}
-          status={batchStatusName}
-        />
       </div>
     </div>
   );
