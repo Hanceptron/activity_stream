@@ -215,19 +215,24 @@ export function keyboardMouseMix(window) {
   return c / (k + c);
 }
 
-// Milliseconds since the start of the current unbroken run of
-// metric windows. A run ends when the gap between two consecutive
-// window_starts exceeds `gapMs` (default 5 min, matching the batch
-// job's session boundary). Returns null when the newest window is
-// older than `gapMs` (the user is currently idle, so there is no
-// running session).
+// Milliseconds since the start of the current unbroken run of ACTIVE
+// metric windows ("the current sitting"). A run ends when the gap
+// between two consecutive active window_starts exceeds `gapMs` (default
+// 5 min, matching the batch job's session boundary). Returns null when
+// the newest active window is older than `gapMs` (the user is idle).
 //
-// This is the frontend-side definition of "current session" — the
-// batch job's session list lags by however often it runs.
+// Idle / 0-count windows are filtered out first so a pause cannot bridge
+// a break: without this the timer merged across a sub-window gap and
+// over-counted (e.g. 21 min when the real sitting was 4). This is the
+// frontend's definition of "current session"; the batch session list
+// lags by however often the batch runs.
 export function sessionTimer(metrics, gapMs = 5 * 60 * 1000, now = Date.now()) {
   if (!metrics || metrics.length === 0) return null;
 
-  const sorted = [...metrics].sort((a, b) => {
+  const active = metrics.filter(isActiveBucket);
+  if (active.length === 0) return null;
+
+  const sorted = [...active].sort((a, b) => {
     const at = parseUtc(a.window_start);
     const bt = parseUtc(b.window_start);
     return bt.getTime() - at.getTime();
@@ -245,6 +250,21 @@ export function sessionTimer(metrics, gapMs = 5 * 60 * 1000, now = Date.now()) {
     runStartTime = nextTime;
   }
   return now - runStartTime;
+}
+
+// True when the freshest measured minute is recent enough that the user
+// is active right now. Scans window_end (not window_start) for the max,
+// matching Header's freshness rationale: a 1-min window + watermark makes
+// window_start age oscillate, while window_end age stays tight. Shared by
+// the header live dot and the day-detail live badge so they agree.
+export function isActiveNow(metrics, now = Date.now(), maxAgeMs = 2 * 60 * 1000) {
+  if (!metrics || metrics.length === 0) return false;
+  let newestEnd = -Infinity;
+  for (const m of metrics) {
+    const t = parseUtc(m.window_end)?.getTime();
+    if (t != null && t > newestEnd) newestEnd = t;
+  }
+  return newestEnd !== -Infinity && now - newestEnd < maxAgeMs;
 }
 
 // Top-k cells of a given type from /api/heatmap, sorted by count.

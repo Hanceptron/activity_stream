@@ -4,7 +4,10 @@ import {
   endOfLocalDayMs,
   formatDayLabel,
   groupSessionsByDay,
+  isActiveNow,
+  localDayKey,
   parseUtc,
+  sessionTimer,
 } from "../utils";
 import { usePolling } from "../usePolling";
 import { SessionRow, SessionTableHeader } from "./SessionTable";
@@ -33,22 +36,26 @@ const RATING_META = {
   productive: { text: "High-output", color: "text-green-400" },
 };
 
-// A session counts as "live" when its last recorded activity is within
-// this window of now. The batch refreshes every 5 min and sessionization
-// closes a sitting after a 5-min input gap, so 6 min keeps an ongoing
-// session flagged right up to the next batch tick without mislabelling
-// one the user already walked away from.
-const LIVE_WINDOW_MS = 6 * 60_000;
-
-export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
-  // 30 s ticker so the "live" badge on an in-progress session clears
-  // itself once activity stops, even between data refreshes. Lazy init
-  // plus the interval callback keep Date.now() out of the render body.
+export function DayDetailPanel({ sessions, metrics, dayKey, user, onClose }) {
+  // 10 s ticker so the live badge and its counting-up duration update
+  // smoothly and clear shortly after activity stops, even between data
+  // refreshes. Lazy init plus the interval callback keep Date.now() out
+  // of the render body.
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    const id = setInterval(() => setNowMs(Date.now()), 10_000);
     return () => clearInterval(id);
   }, []);
+
+  // "Live" is bound to the same current sitting the header times: the
+  // user is active now (fresh /api/metrics) AND today's most-recent
+  // session starts at the current sitting's start. The start-match stops
+  // a stale prior session from lighting up before the batch emits the
+  // new one. Driven by the live stream, not the lagged session_end.
+  const activeNow = isActiveNow(metrics, nowMs);
+  const todayKey = localDayKey(new Date(nowMs));
+  const sittingMs = sessionTimer(metrics, 5 * 60 * 1000, nowMs);
+  const sittingStartMs = sittingMs != null ? nowMs - sittingMs : null;
 
   const byDay = useMemo(() => groupSessionsByDay(sessions), [sessions]);
   const daySessions = byDay.get(dayKey) ?? [];
@@ -149,10 +156,18 @@ export function DayDetailPanel({ sessions, dayKey, user, onClose }) {
         ) : (
           <div className="max-h-96 overflow-y-auto">
             <SessionTableHeader />
-            {sorted.map((s) => {
-              const end = parseUtc(s.session_end)?.getTime();
-              const live = end != null && nowMs - end < LIVE_WINDOW_MS;
-              return <SessionRow key={s.session_id} s={s} live={live} />;
+            {sorted.map((s, i) => {
+              const startMs = parseUtc(s.session_start)?.getTime();
+              const live =
+                activeNow &&
+                dayKey === todayKey &&
+                i === 0 &&
+                sittingStartMs != null &&
+                startMs != null &&
+                Math.abs(startMs - sittingStartMs) < 90_000;
+              return (
+                <SessionRow key={s.session_id} s={s} live={live} now={nowMs} />
+              );
             })}
           </div>
         )}

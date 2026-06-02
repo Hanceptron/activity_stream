@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   getTodaysSessions,
-  parseUtc,
+  isActiveNow,
   peakKsPerMinToday,
   sessionTimer,
 } from "../utils";
@@ -34,17 +34,9 @@ export function Header({
     return () => clearInterval(id);
   }, []);
 
-  const latest =
-    metrics && metrics.length > 0 ? metrics[metrics.length - 1] : null;
-  // window_end (not window_start) so the dot reads "how stale is the
-  // freshest measured minute" rather than "how far past the start of
-  // the freshest window are we". With Spark's 1-min window + 30 s
-  // watermark, window_start age oscillates 90-150 s under continuous
-  // activity, which would cross the 2-minute live threshold every
-  // minute and flicker the dot. window_end age stays in 30-90 s.
-  const latestTime = latest ? parseUtc(latest.window_end)?.getTime() : null;
-  const ageMs = latestTime != null ? now - latestTime : Infinity;
-  const isLive = ageMs < 2 * 60 * 1000;
+  // Freshness rationale (window_end, 2-min threshold) now lives in
+  // isActiveNow, shared with the day-detail live badge so they agree.
+  const isLive = isActiveNow(metrics, now);
 
   const sessionMs = sessionTimer(metrics, 5 * 60 * 1000, now);
   const todays = getTodaysSessions(sessions, now);

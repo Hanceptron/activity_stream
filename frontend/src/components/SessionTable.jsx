@@ -1,4 +1,4 @@
-import { formatSessionRange, parseUtc } from "../utils";
+import { formatClock, formatSessionRange, parseUtc } from "../utils";
 
 // Shared session-table primitives: the six-column header and one row,
 // reused by the day drill-down (DayDetailPanel). Extracted from the
@@ -34,17 +34,31 @@ export function SessionTableHeader() {
 // DayDetailPanel renders rows identical across views. start/end can be
 // null if the backend ever emits a malformed timestamp; the guards
 // keep the row from rendering "NaN min".
-export function SessionRow({ s, live = false }) {
+export function SessionRow({ s, live = false, now = 0 }) {
   const start = parseUtc(s.session_start);
   const end = parseUtc(s.session_end);
-  const durationMin =
-    start && end ? Math.max(1, Math.round((end - start) / 60000)) : null;
+  // A live session has no real end yet, so its duration counts up from
+  // the start to now (floored, to match the header timer's minute);
+  // finished sessions use their recorded span.
+  const durationMin = live
+    ? start
+      ? Math.max(1, Math.floor((now - start.getTime()) / 60000))
+      : null
+    : start && end
+      ? Math.max(1, Math.round((end - start) / 60000))
+      : null;
 
   return (
     <div className="grid grid-cols-6 gap-4 text-sm py-2 border-b border-white/5 text-zinc-200 items-center">
       <div className="flex items-center gap-2">
-        <span>{formatSessionRange(start, end)}</span>
-        {live && <LiveBadge />}
+        {live ? (
+          <>
+            <span>Started {formatClock(start)}</span>
+            <LiveBadge />
+          </>
+        ) : (
+          <span>{formatSessionRange(start, end)}</span>
+        )}
       </div>
       <div>{durationMin != null ? `${durationMin} min` : "—"}</div>
       <div>{s.keystrokes_total}</div>

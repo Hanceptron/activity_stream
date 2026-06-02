@@ -112,6 +112,7 @@ export default function App() {
           {selectedDay && (
             <DayDetailPanel
               sessions={sessionsForUser}
+              metrics={metricsForUser}
               dayKey={selectedDay}
               user={effectiveUser}
               onClose={() => setSelectedDay(null)}
