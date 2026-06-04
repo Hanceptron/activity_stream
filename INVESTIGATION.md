@@ -1,4 +1,4 @@
-# StreamGuard Investigation
+# KeySpark Investigation
 
 ## Current status
 DONE WITH CAVEATS. Last updated: 2026-05-27T20:10Z.
@@ -129,7 +129,7 @@ Caused by: org.apache.kafka.common.errors.UnknownTopicOrPartitionException: This
 - Proof after (2026-05-27T22:40Z, second cold start with the fix in place):
 ```
 checkpoint offset 206083 > kafka high-water 0; wiping output/checkpoint
-StreamGuard started in detached tmux session 'streamguard'.
+KeySpark started in detached tmux session 'streamguard'.
 # 20 s later all four health probes pass:
 22:41:11 t=20s api=1 agent_n=5 streaming_jvm=1 front=200 kafka_off=0
 ALL UP at t=20s

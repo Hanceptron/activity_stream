@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# StreamGuard - tmux startup.
+# KeySpark - tmux startup.
 #
 # Starts the four long-running processes (agent, streaming, backend,
 # frontend) inside a single detached tmux session named "streamguard",
@@ -91,7 +91,7 @@ tmux new-window -t streamguard -n frontend \
   "cd $ROOT/frontend && npm run dev"
 
 echo
-echo "StreamGuard started in detached tmux session 'streamguard'."
+echo "KeySpark started in detached tmux session 'streamguard'."
 echo "  Attach: tmux attach -t streamguard"
 echo "  Stop:   tmux kill-session -t streamguard"
 echo "  Open:   http://localhost:5173"

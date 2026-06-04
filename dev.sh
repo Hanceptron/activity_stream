@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# StreamGuard local dev launcher.
+# KeySpark local dev launcher.
 #
 # Starts the backend (FastAPI on :8000, owns the batch scheduler
 # and a long-lived Spark session) and the frontend dev server (Vite

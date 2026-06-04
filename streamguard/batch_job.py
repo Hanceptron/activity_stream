@@ -1,4 +1,4 @@
-"""StreamGuard Spark batch job.
+"""KeySpark Spark batch job.
 
 Reads the raw event archive at output/events/, sessionizes activity,
 writes per-session fatigue summaries to output/sessions/, a per-user
@@ -48,7 +48,7 @@ HEATMAP_PRESETS = [
 def build_session():
     return (
         SparkSession.builder
-        .appName("streamguard-batch")
+        .appName("keyspark-batch")
         .master("local[*]")
         .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
@@ -241,7 +241,7 @@ def compute_all(spark):
 
     Called both from the CLI ``main()`` below and from the API's
     in-process scheduler in ``api.py``. The ``unpersist()`` calls in
-    the ``finally`` blocks matter for the scheduled case — without
+    the ``finally`` blocks matter for the scheduled case - without
     them, cached DataFrames pile up in Spark memory across runs.
 
     Returns early with a warning when ``output/events/`` does not

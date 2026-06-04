@@ -1,4 +1,4 @@
-"""StreamGuard Spark Structured Streaming job.
+"""KeySpark Spark Structured Streaming job.
 
 Two streaming queries share one parsed Kafka stream. Query A
 aggregates per-(user, one-minute window) event counts (keystrokes,
@@ -63,7 +63,7 @@ WINDOW_DURATION = "1 minute"
 def build_session():
     return (
         SparkSession.builder
-        .appName("streamguard")
+        .appName("keyspark")
         .master("local[*]")
         .config("spark.jars.packages", KAFKA_PACKAGE)
         .config("spark.sql.shuffle.partitions", "4")

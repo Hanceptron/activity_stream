@@ -1,4 +1,4 @@
-"""StreamGuard backend API.
+"""KeySpark backend API.
 
 Thin FastAPI service that reads the four parquet outputs from the
 streaming and batch jobs and serves them as JSON for the React
@@ -8,7 +8,7 @@ caching, no SQL layer. Adequate for a single-user demo.
 In addition to serving the parquet data, this process now owns the
 batch job. On startup, ``lifespan`` builds a Spark session and
 synchronously runs ``compute_all`` once so the dashboard isn't
-stale immediately after a restart — uvicorn does not accept
+stale immediately after a restart - uvicorn does not accept
 connections until that completes (~60-120 s on cold start). After
 that, an APScheduler ``BackgroundScheduler`` fires ``compute_all``
 every ``REFRESH_INTERVAL_SEC`` seconds in a worker thread so live
@@ -99,7 +99,7 @@ def _run_batch(spark) -> None:
             batch_state.last_status = "ok"
             batch_state.last_error = None
             batch_state.last_run = datetime.now(timezone.utc)
-    except Exception as exc:  # noqa: BLE001 — see docstring
+    except Exception as exc:  # noqa: BLE001 - see docstring
         # Record the failure before exiting so a request that lands
         # between the failure and process death sees the real state.
         log.exception("batch run failed - exiting for fresh Spark respawn")
@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI):
         spark.stop()
 
 
-app = FastAPI(title="StreamGuard API", lifespan=lifespan)
+app = FastAPI(title="KeySpark API", lifespan=lifespan)
 # allow_origins=["*"] is intentionally permissive for the single-user
 # dev setup (Vite on 5173 + this API on 8000). Tighten before exposing
 # the dashboard on a network.

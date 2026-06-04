@@ -1,4 +1,4 @@
-# StreamGuard - Startup
+# KeySpark - Startup
 
 Four processes need to run for the full pipeline: Kafka (Docker), the
 recording agent, the Spark streaming job, and the dashboard (FastAPI +
@@ -16,7 +16,7 @@ terminal needed.
 
 ## Sleep & screen lock
 
-StreamGuard is sleep-friendly: the Mac is allowed to sleep and the
+KeySpark is sleep-friendly: the Mac is allowed to sleep and the
 screen is allowed to lock as usual (no `caffeinate` wrappers anywhere).
 
 - Walk away → screen locks per `System Settings → Lock Screen`.

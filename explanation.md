@@ -1,8 +1,8 @@
-# StreamGuard - Explanation
+# KeySpark - Explanation
 
 ## What this project is
 
-StreamGuard is a typing performance tracker. It records every
+KeySpark is a typing performance tracker. It records every
 keyboard and mouse event from a user's machine, ships them through a
 Kafka topic as JSON, and runs an Apache Spark Structured Streaming
 job that groups the events into one-minute windows per user and

@@ -1,4 +1,4 @@
-"""StreamGuard throughput / latency benchmark.
+"""KeySpark throughput / latency benchmark.
 
 Produces the Big-Data performance numbers reported in the paper and the
 demo. Two sub-commands:
@@ -189,7 +189,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(
-        description="StreamGuard throughput/latency benchmark"
+        description="KeySpark throughput/latency benchmark"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("batch", help="batch analytical pipeline throughput")

@@ -1,4 +1,4 @@
-"""StreamGuard input capture agent.
+"""KeySpark input capture agent.
 
 Captures keyboard and mouse events on macOS via pynput and emits one
 JSON object per event to stdout or Kafka. See README for the macOS
@@ -304,7 +304,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="StreamGuard input capture agent")
+    parser = argparse.ArgumentParser(description="KeySpark input capture agent")
     parser.add_argument("--sink", choices=("stdout", "kafka"), default="stdout")
     args = parser.parse_args()
 

@@ -1,4 +1,4 @@
-# StreamGuard
+# KeySpark
 
 Real-time typing-performance tracker for macOS. Captures keyboard and
 mouse events, streams them through Kafka, derives per-minute metrics

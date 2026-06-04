@@ -1,4 +1,4 @@
-"""StreamGuard next-window keystroke forecaster.
+"""KeySpark next-window keystroke forecaster.
 
 A one-step-ahead regression model: given the last ``LAGS`` one-minute
 windows of a typing session, predict the *next* window's keystroke
@@ -312,7 +312,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(
-        description="StreamGuard next-window keystroke forecaster"
+        description="KeySpark next-window keystroke forecaster"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("train", help="fit on all windows and persist the model")
