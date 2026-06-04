@@ -15,8 +15,8 @@ demo. Two sub-commands:
               processed rows/sec (throughput) and per-micro-batch
               duration (latency).
 
-  uv run python -m streamguard.benchmark batch
-  uv run python -m streamguard.benchmark streaming
+  uv run python -m keyspark.benchmark batch
+  uv run python -m keyspark.benchmark streaming
 
 Both read only ``output/events/`` and write nothing back into the live
 output directories (the streaming benchmark uses a throwaway checkpoint
@@ -37,17 +37,17 @@ import time
 from pyspark.sql.functions import col, window
 from pyspark.sql.types import TimestampType
 
-from streamguard.aggregations import event_count_exprs
-from streamguard.batch_job import (
+from keyspark.aggregations import event_count_exprs
+from keyspark.batch_job import (
     EVENTS_PATH,
     build_session,
     per_window_metrics,
     session_summary,
     user_baseline,
 )
-from streamguard.streaming_job import WATERMARK, WINDOW_DURATION, event_schema
+from keyspark.streaming_job import WATERMARK, WINDOW_DURATION, event_schema
 
-log = logging.getLogger("streamguard.benchmark")
+log = logging.getLogger("keyspark.benchmark")
 
 # Throwaway checkpoint so the streaming benchmark reprocesses the whole
 # archive every run instead of resuming from a previous benchmark.

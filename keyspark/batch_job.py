@@ -1,7 +1,7 @@
 """KeySpark Spark batch job.
 
 Reads the raw event archive at output/events/, sessionizes activity,
-writes per-session fatigue summaries to output/sessions/, a per-user
+writes per-session summaries to output/sessions/, a per-user
 baseline to output/baseline/, and one spatial heatmap per preset
 time range under output/heatmaps/{1h,6h,1d,3d,1w}/. Overwrites its
 output directories each run.
@@ -14,9 +14,9 @@ from pathlib import Path
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
-from streamguard.aggregations import event_count_exprs
+from keyspark.aggregations import event_count_exprs
 
-log = logging.getLogger("streamguard.batch_job")
+log = logging.getLogger("keyspark.batch_job")
 
 EVENTS_PATH = "output/events"
 SESSIONS_PATH = "output/sessions"
@@ -28,8 +28,6 @@ HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
 
 WINDOW_SIZE = "1 minute"
 SESSION_GAP_SECONDS = 5 * 60
-
-MIN_WINDOWS_FOR_FATIGUE = 5
 
 # Heatmap grid resolution in screen pixels per cell. Smaller = finer
 # grid = sharper heatmap. 16px gives a ~240-wide grid on a 4K display,
@@ -62,12 +60,9 @@ def per_window_metrics(events):
     # order, a new session starts whenever the gap from the previous
     # event exceeds SESSION_GAP_SECONDS. The running cumulative sum
     # of those "new session" flags is a stable integer session_id per
-    # event. We do this instead of Spark's session_window because (a)
-    # session_window cannot share a groupBy with window() and (b) its
-    # materialized struct values are per-event, so they do not
-    # partition correctly for Window.partitionBy in session_summary
-    # below, which leaves window_idx stuck at 0 and silently breaks
-    # every regr_slope.
+    # event. We do this instead of Spark's session_window because it
+    # cannot share a groupBy with window() (per_window_metrics groups
+    # by the 1-minute time_window).
     user_order = Window.partitionBy("user").orderBy("event_time")
     cumulative = user_order.rowsBetween(Window.unboundedPreceding, Window.currentRow)
     events_s = (
@@ -100,26 +95,14 @@ def per_window_metrics(events):
 
 
 def session_summary(per_window):
-    """One row per (session_id, user) with totals and the fatigue index.
+    """One row per (session_id, user) with session totals.
 
-    fatigue_index combines two within-session slopes:
-      - keystrokes_slope: typing speed trend (negative = slowing down)
-      - corrections_slope: error trend (positive = more mistakes)
-    Both are computed against `window_idx`, the zero-based ordinal of
-    each minute inside the session. Fatigue = slowing down AND making
-    more errors, so we add the corrections slope and subtract the
-    keystroke slope. (The previous rhythm/pause inputs were removed
-    when the rhythm pipeline was retired.)
+    Aggregates each session's per-minute windows into start/end, the
+    window count, and the four count totals. (The previous fatigue
+    trend index was removed.)
     """
-    window_order = Window.partitionBy("session_id", "user").orderBy(
-        F.col("time_window.start")
-    )
-    indexed = per_window.withColumn(
-        "window_idx", F.row_number().over(window_order) - 1
-    )
-
     return (
-        indexed.groupBy("session_id", "user")
+        per_window.groupBy("session_id", "user")
         .agg(
             F.min(F.col("time_window.start")).alias("session_start"),
             F.max(F.col("time_window.end")).alias("session_end"),
@@ -128,27 +111,6 @@ def session_summary(per_window):
             F.sum("words").alias("words_total"),
             F.sum("corrections").alias("corrections_total"),
             F.sum("clicks").alias("clicks_total"),
-            F.regr_slope(F.col("keystrokes"), F.col("window_idx")).alias(
-                "keystrokes_slope"
-            ),
-            F.regr_slope(F.col("corrections"), F.col("window_idx")).alias(
-                "corrections_slope"
-            ),
-        )
-        .withColumn(
-            "fatigue_index",
-            -F.col("keystrokes_slope") + F.col("corrections_slope"),
-        )
-        .withColumn(
-            # fatigue_index is null when either slope is null (Spark
-            # addition propagates null). regr_slope is null when a
-            # session has fewer than two windows. We require both the
-            # window-count floor and a non-null fatigue_index so the
-            # frontend can use this single flag as a safe "the number
-            # below is renderable" guard.
-            "fatigue_reliable",
-            (F.col("window_count") >= MIN_WINDOWS_FOR_FATIGUE)
-            & F.col("fatigue_index").isNotNull(),
         )
     )
 

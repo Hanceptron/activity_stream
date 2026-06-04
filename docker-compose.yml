@@ -1,7 +1,7 @@
 services:
   kafka:
     image: apache/kafka:3.8.1
-    container_name: streamguard-kafka
+    container_name: keyspark-kafka
     restart: unless-stopped
     ports:
       - "9092:9092"

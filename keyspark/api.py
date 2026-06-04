@@ -32,9 +32,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from streamguard.batch_job import CELL_SIZE, build_session, compute_all
+from keyspark.batch_job import CELL_SIZE, build_session, compute_all
 
-log = logging.getLogger("streamguard.api")
+log = logging.getLogger("keyspark.api")
 
 METRICS_PATH = "output/metrics"
 SESSIONS_PATH = "output/sessions"
@@ -43,6 +43,7 @@ HEATMAPS_PATH = "output/heatmaps"
 DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
 HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
 ML_METRICS_PATH = "output/models/metrics.json"
+LIVENESS_PATH = "output/liveness.parquet"
 DISPLAY_PATH = "output/display.json"
 
 # Fallback when the agent has not written output/display.json yet:
@@ -95,6 +96,17 @@ def _run_batch(spark) -> None:
         batch_state.last_status = "running"
     try:
         compute_all(spark)
+        # Score liveness right after the batch refresh. This is pure
+        # pandas/sklearn, unrelated to the Spark RPC, so a failure here
+        # must NOT trigger the os._exit respawn below - catch it and keep
+        # serving the last good flags. Imported locally so a missing
+        # scikit-learn never breaks the batch itself.
+        try:
+            from keyspark.ml import write_liveness
+
+            write_liveness()
+        except Exception:
+            log.exception("liveness scoring failed; serving previous flags")
         with batch_state_lock:
             batch_state.last_status = "ok"
             batch_state.last_error = None
@@ -336,10 +348,10 @@ def get_health() -> dict:
 
 @app.get("/api/ml/metrics")
 def get_ml_metrics() -> dict:
-    """Cross-validated evaluation metrics for the fatigue classifier.
+    """Held-out evaluation metrics for the human-vs-non-human liveness classifier.
 
     Returns the contents of ``output/models/metrics.json`` written by
-    ``streamguard.ml evaluate``. An absent file means the user has not
+    ``keyspark.ml evaluate``. An absent file means the user has not
     trained or evaluated the model yet - we return ``{"available":
     false}`` rather than 404 so the dashboard can render a "not yet
     trained" state cleanly.
@@ -348,3 +360,18 @@ def get_ml_metrics() -> dict:
     if not p.exists():
         return {"available": False}
     return {"available": True, **json.loads(p.read_text())}
+
+
+@app.get("/api/liveness")
+def get_liveness(user: Optional[str] = None) -> list:
+    """Per-(user, day) human-vs-non-human flags from output/liveness.parquet,
+    written by the batch scheduler's liveness scoring. The calendar colors a
+    day red where ``nonhuman`` is true. Empty list until the model has scored
+    at least once. Optional ``user`` filter.
+    """
+    df = _read_parquet(LIVENESS_PATH)
+    if df.empty:
+        return []
+    if user is not None:
+        df = df[df["user"] == user]
+    return _to_records(df)

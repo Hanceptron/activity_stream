@@ -745,7 +745,7 @@ wheels = [
 ]
 
 [[package]]
-name = "streamguard"
+name = "keyspark"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

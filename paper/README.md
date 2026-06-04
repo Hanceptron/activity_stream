@@ -28,9 +28,9 @@ Search the source for these tags before submission:
 
 - `% TODO(data-freeze)` - final numbers, filled ~1–2 days before the demo:
   - final event count + collection span (Abstract, §Dataset)
-  - final ML RMSE/MAE/R² from `uv run python -m streamguard.ml evaluate`
+  - final ML RMSE/MAE/R² from `uv run python -m keyspark.ml evaluate`
     (Abstract, Table II)
-  - re-run `uv run python -m streamguard.benchmark batch|streaming` and
+  - re-run `uv run python -m keyspark.benchmark batch|streaming` and
     refresh Table I
 - `% TODO(figure)` - screenshots/plots to add to `figures/`:
   - dashboard (live metrics + time series)

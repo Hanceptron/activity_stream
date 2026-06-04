@@ -51,7 +51,7 @@ Open <http://localhost:5173> in a browser.
 ### Inspect / attach
 
 ```sh
-tmux attach -t streamguard
+tmux attach -t keyspark
 ```
 
 Inside tmux:
@@ -63,7 +63,7 @@ Inside tmux:
 ### Stop
 
 ```sh
-tmux kill-session -t streamguard
+tmux kill-session -t keyspark
 ```
 
 ## Option B: foreground terminals
@@ -83,7 +83,7 @@ docker compose up -d
 
 ```sh
 while true; do
-  uv run python -m streamguard.agent --sink kafka
+  uv run python -m keyspark.agent --sink kafka
   echo "[$(date)] agent exited, restarting in 5s..."
   sleep 5
 done
@@ -96,7 +96,7 @@ from sleep; otherwise quiet.
 
 ```sh
 while true; do
-  uv run python -m streamguard.streaming_job
+  uv run python -m keyspark.streaming_job
   echo "[$(date)] streaming job exited, restarting in 5s..."
   sleep 5
 done
@@ -125,8 +125,8 @@ Open <http://localhost:5173>.
 ## Verifying it's all alive
 
 ```sh
-ps -ef | grep -E 'streamguard|uvicorn|vite' | grep -v grep
-docker ps --filter name=streamguard-kafka
+ps -ef | grep -E 'keyspark|uvicorn|vite' | grep -v grep
+docker ps --filter name=keyspark-kafka
 curl -s http://localhost:8000/api/batch_status
 
 # Newest metric window age - should be <120s while you're typing
@@ -151,7 +151,7 @@ test: green = full chain is flowing.
 ### Dashboard goes "offline" while you're typing
 
 ```sh
-ps -ef | grep -E 'streamguard.streaming_job|streamguard.agent' | grep -v grep
+ps -ef | grep -E 'keyspark.streaming_job|keyspark.agent' | grep -v grep
 ```
 
 All three of agent, streaming job, and backend live inside a restart
@@ -162,7 +162,7 @@ the dot stays red:
   `./startup-tmux.sh` (it is idempotent — kills the prior session
   first) or relaunch the affected terminal.
 - **Process listed but no fresh data**: tail the relevant tmux pane
-  (`tmux attach -t streamguard`, then `Ctrl+B 0/1/2/3`) for an error
+  (`tmux attach -t keyspark`, then `Ctrl+B 0/1/2/3`) for an error
   message. Wake handling now lives inside the agent, so a stuck event
   tap is no longer the expected culprit; check Kafka first.
 
@@ -172,7 +172,7 @@ Known Spark 4.x bug when restoring from an existing checkpoint. The loop
 keeps crashing on the same NPE until you wipe the stale state:
 
 ```sh
-pkill -f streamguard.streaming_job
+pkill -f keyspark.streaming_job
 rm -rf output/checkpoint
 rm -rf output/metrics/_spark_metadata
 rm -rf output/events/_spark_metadata
@@ -189,7 +189,7 @@ the first restart after pulling that change, wipe the now-incompatible
 streaming state so Spark rebuilds the parquet with the new schema:
 
 ```sh
-pkill -f streamguard.streaming_job
+pkill -f keyspark.streaming_job
 rm -rf output/checkpoint/metrics output/metrics output/baseline
 ```
 
@@ -202,7 +202,7 @@ The API runs the batch every 5 minutes automatically. If you want one
 right now:
 
 ```sh
-JAVA_HOME=$(/usr/libexec/java_home) uv run python -m streamguard.batch_job
+JAVA_HOME=$(/usr/libexec/java_home) uv run python -m keyspark.batch_job
 ```
 
 (Standalone invocation; competes with the API's in-process scheduler,
@@ -211,8 +211,8 @@ but both write with `mode("overwrite")`, so the last writer wins.)
 ### Fresh start - wipe everything and begin a new recording
 
 ```sh
-tmux kill-session -t streamguard 2>/dev/null
-pkill -f streamguard
+tmux kill-session -t keyspark 2>/dev/null
+pkill -f keyspark
 docker compose down            # optional - also stops Kafka
 rm -rf output/
 ```
@@ -224,7 +224,7 @@ Then start over from "Option A" or "Option B".
 tmux:
 
 ```sh
-tmux kill-session -t streamguard
+tmux kill-session -t keyspark
 ```
 
 Foreground terminals: `Ctrl+C` in each. Order doesn't matter.

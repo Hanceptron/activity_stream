@@ -14,9 +14,9 @@ parquet files on disk.
 
 The system has three running parts:
 
-- A native macOS recording agent at `streamguard/agent.py`.
+- A native macOS recording agent at `keyspark/agent.py`.
 - A single Kafka broker running in Docker (`docker-compose.yml`).
-- A Spark streaming job running locally (`streamguard/streaming_job.py`).
+- A Spark streaming job running locally (`keyspark/streaming_job.py`).
 
 The agent runs on the host because it needs raw access to the
 keyboard and mouse devices. Kafka runs in a container because it
@@ -185,7 +185,7 @@ exactly-once.
 
 ### Where it lives
 
-- `streamguard/streaming_job.py` lines 21-34: hardcoded constants,
+- `keyspark/streaming_job.py` lines 21-34: hardcoded constants,
   including the Kafka connector package coordinate (line 26) which
   must match the installed pyspark version exactly and the two
   output and two checkpoint paths (lines 28-31).
@@ -265,7 +265,7 @@ turns five sequential scans into one.
 
 ### Where it lives
 
-- `streamguard/batch_job.py` line 19: `HEATMAPS_PATH`.
+- `keyspark/batch_job.py` line 19: `HEATMAPS_PATH`.
 - Lines 26-33: `CELL_SIZE` and the `HEATMAP_PRESETS` list mapping
   each label to its hour count.
 - Lines 197-214: `heatmap_for_range(events, hours, max_event_time)`
@@ -399,7 +399,7 @@ read this file alongside the streaming output.
 
 ### Where it lives
 
-- `streamguard/batch_job.py` lines 13-20: constants - the input
+- `keyspark/batch_job.py` lines 13-20: constants - the input
   and output paths, the per-window size, the session-gap threshold
   in seconds, the pause threshold, and the fatigue-reliability
   cutoff.
@@ -428,10 +428,10 @@ read this file alongside the streaming output.
 
 A React dashboard running in the browser cannot read parquet files
 directly - parquet is a columnar binary format meant for analytics
-engines, not for JavaScript `fetch` calls. `streamguard/api.py` is
+engines, not for JavaScript `fetch` calls. `keyspark/api.py` is
 a thin FastAPI app that opens those parquet files and serves their
 rows as JSON over HTTP, started with
-`uv run uvicorn streamguard.api:app --reload`.
+`uv run uvicorn keyspark.api:app --reload`.
 
 ### The endpoints
 

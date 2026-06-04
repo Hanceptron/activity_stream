@@ -17,7 +17,7 @@ import { filterByUser, parseUtc } from "./utils";
 //   come from the batch job (or its scheduler state) and only
 //   change when the batch job runs, so polling any faster would
 //   just resend the same payload. The scheduler runs every 5 min
-//   inside the API process; see streamguard/api.py.
+//   inside the API process; see keyspark/api.py.
 //
 // Multi-user filtering: every endpoint includes a `user` field.
 // The dashboard scopes every panel to a single user. `selectedUser`
@@ -78,6 +78,23 @@ export default function App() {
       ? baseline.find((b) => b.user === effectiveUser) ?? null
       : null;
 
+  // Per-day human/non-human flags for the calendar (red = automation
+  // detected). Scoped to the rendered user; a null url skips the fetch
+  // until a user is known.
+  const liveness = usePolling(
+    effectiveUser ? `/api/liveness?user=${effectiveUser}` : null,
+    30_000,
+  );
+  const nonhumanDays = useMemo(
+    () =>
+      new Set(
+        (liveness || [])
+          .filter((r) => r.nonhuman && r.user === effectiveUser)
+          .map((r) => r.day),
+      ),
+    [liveness, effectiveUser],
+  );
+
   return (
     <div className="min-h-screen text-zinc-100">
       <div className="max-w-7xl mx-auto p-6 space-y-6">
@@ -108,6 +125,7 @@ export default function App() {
             onSelectDay={setSelectedDay}
             lastRunIso={lastBatchRun}
             status={batchStatusName}
+            nonhumanDays={nonhumanDays}
           />
           {selectedDay && (
             <DayDetailPanel

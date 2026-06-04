@@ -30,9 +30,9 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from streamguard.aggregations import event_count_exprs
+from keyspark.aggregations import event_count_exprs
 
-log = logging.getLogger("streamguard.streaming_job")
+log = logging.getLogger("keyspark.streaming_job")
 
 KAFKA_BOOTSTRAP = "localhost:9092"
 KAFKA_TOPIC = "events.raw"

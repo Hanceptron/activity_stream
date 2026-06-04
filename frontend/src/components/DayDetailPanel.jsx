@@ -28,7 +28,7 @@ import { Heatmap } from "./Heatmap";
 // different day refetches.
 // Day-level ACTIVITY tier shown in the header (text-color variant of
 // the MonthCalendar intensity ramp). Distinct from the per-session
-// fatigue index shown in the rows below.
+// totals shown in the rows below.
 const RATING_META = {
   not_active: { text: "Not active", color: "text-zinc-500" },
   below_average: { text: "Below average", color: "text-green-300/70" },

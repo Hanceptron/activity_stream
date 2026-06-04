@@ -38,10 +38,10 @@ behind each layer.
 
 | Path | What it is |
 | --- | --- |
-| `streamguard/agent.py` | pynput capture, JSON to stdout or Kafka, with macOS sleep/wake recovery |
-| `streamguard/streaming_job.py` | Spark Structured Streaming: 1-minute tumbling windows + raw archive |
-| `streamguard/batch_job.py` | Spark batch: sessions, fatigue, per-user baseline, spatial heatmaps |
-| `streamguard/api.py` | FastAPI server exposing parquet outputs as JSON; owns the in-process batch scheduler |
+| `keyspark/agent.py` | pynput capture, JSON to stdout or Kafka, with macOS sleep/wake recovery |
+| `keyspark/streaming_job.py` | Spark Structured Streaming: 1-minute tumbling windows + raw archive |
+| `keyspark/batch_job.py` | Spark batch: sessions, fatigue, per-user baseline, spatial heatmaps |
+| `keyspark/api.py` | FastAPI server exposing parquet outputs as JSON; owns the in-process batch scheduler |
 | `frontend/` | Vite + React + Tailwind dashboard (polling-based, no WebSocket) |
 | `docker-compose.yml` | Single-broker Kafka in KRaft mode |
 | `startup-tmux.sh` | One-shot tmux launcher for all four foreground processes |
@@ -105,13 +105,13 @@ The agent runs standalone for capture-only or enrollment workflows:
 
 ```sh
 # stdout: one JSON event per line — useful to verify capture works
-uv run python -m streamguard.agent
+uv run python -m keyspark.agent
 
 # kafka: produce to topic events.raw on localhost:9092, keyed by user
-uv run python -m streamguard.agent --sink kafka
+uv run python -m keyspark.agent --sink kafka
 
 # record a session to a file for later analysis
-uv run python -m streamguard.agent > session.jsonl
+uv run python -m keyspark.agent > session.jsonl
 ```
 
 Stop with `Ctrl+C`. In Kafka mode the producer flushes before
@@ -155,7 +155,7 @@ them); see `startup.md` for when and how to reset them.
 
 ## API
 
-`streamguard/api.py` serves the parquet outputs as JSON over HTTP
+`keyspark/api.py` serves the parquet outputs as JSON over HTTP
 on port 8000. All endpoints return an empty list before their
 underlying parquet directory exists.
 
@@ -172,11 +172,11 @@ so there is no separate batch terminal in the normal run.
 
 Edit constants at the top of the relevant module:
 
-- `streamguard/agent.py` — `USER_ID`, `KAFKA_BOOTSTRAP`, `KAFKA_TOPIC`,
+- `keyspark/agent.py` — `USER_ID`, `KAFKA_BOOTSTRAP`, `KAFKA_TOPIC`,
   `MOVE_MIN_INTERVAL`.
-- `streamguard/streaming_job.py` — Kafka bootstrap, topic, output and
+- `keyspark/streaming_job.py` — Kafka bootstrap, topic, output and
   checkpoint paths, watermark.
-- `streamguard/batch_job.py` — `SESSION_GAP_SECONDS`, pause threshold,
+- `keyspark/batch_job.py` — `SESSION_GAP_SECONDS`, pause threshold,
   fatigue-reliability cutoff, `CELL_SIZE`, `HEATMAP_PRESETS`.
 
 ## Why native-only on macOS

@@ -2,7 +2,7 @@
 # KeySpark - tmux startup.
 #
 # Starts the four long-running processes (agent, streaming, backend,
-# frontend) inside a single detached tmux session named "streamguard",
+# frontend) inside a single detached tmux session named "keyspark",
 # each in its own window so logs stay separated.
 #
 # The Mac is allowed to sleep and lock normally — no `caffeinate`
@@ -14,8 +14,8 @@
 #
 # Usage:
 #   ./startup-tmux.sh                       # start everything detached
-#   tmux attach -t streamguard              # look at the live logs
-#   tmux kill-session -t streamguard        # stop everything
+#   tmux attach -t keyspark              # look at the live logs
+#   tmux kill-session -t keyspark        # stop everything
 #
 # Inside tmux:
 #   Ctrl+B then 0/1/2/3 - cycle windows
@@ -60,7 +60,7 @@ echo "Kafka is reachable."
 # UnknownTopicOrPartitionException until the agent produces its first
 # event. --if-not-exists makes this idempotent for the common case
 # (Kafka was just restarted with the topic intact).
-docker exec streamguard-kafka /opt/kafka/bin/kafka-topics.sh \
+docker exec keyspark-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --if-not-exists \
   --topic events.raw \
@@ -76,22 +76,22 @@ docker exec streamguard-kafka /opt/kafka/bin/kafka-topics.sh \
 # parquet, independent of the commit log. Never delete _spark_metadata.
 
 # Kill any previous session so this script is idempotent.
-tmux kill-session -t streamguard 2>/dev/null
+tmux kill-session -t keyspark 2>/dev/null
 
-tmux new-session -d -s streamguard -n agent \
-  "$ROOT/run-with-backoff.sh uv run python -m streamguard.agent --sink kafka"
+tmux new-session -d -s keyspark -n agent \
+  "$ROOT/run-with-backoff.sh uv run python -m keyspark.agent --sink kafka"
 
-tmux new-window -t streamguard -n streaming \
-  "$ROOT/run-with-backoff.sh uv run python -m streamguard.streaming_job"
+tmux new-window -t keyspark -n streaming \
+  "$ROOT/run-with-backoff.sh uv run python -m keyspark.streaming_job"
 
-tmux new-window -t streamguard -n backend \
-  "$ROOT/run-with-backoff.sh uv run uvicorn streamguard.api:app --reload"
+tmux new-window -t keyspark -n backend \
+  "$ROOT/run-with-backoff.sh uv run uvicorn keyspark.api:app --reload"
 
-tmux new-window -t streamguard -n frontend \
+tmux new-window -t keyspark -n frontend \
   "cd $ROOT/frontend && npm run dev"
 
 echo
-echo "KeySpark started in detached tmux session 'streamguard'."
-echo "  Attach: tmux attach -t streamguard"
-echo "  Stop:   tmux kill-session -t streamguard"
+echo "KeySpark started in detached tmux session 'keyspark'."
+echo "  Attach: tmux attach -t keyspark"
+echo "  Stop:   tmux kill-session -t keyspark"
 echo "  Open:   http://localhost:5173"

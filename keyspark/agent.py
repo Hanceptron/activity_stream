@@ -66,7 +66,7 @@ except ImportError:
     AXIsProcessTrusted = None  # type: ignore
     NSScreen = None  # type: ignore
 
-log = logging.getLogger("streamguard.agent")
+log = logging.getLogger("keyspark.agent")
 
 
 def _key_id(key) -> str:
@@ -95,7 +95,7 @@ def _kafka_sink():
 
     producer = Producer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "client.id": "streamguard-agent",
+        "client.id": "keyspark-agent",
         # Reconnect with exponential backoff so the socket recovers
         # on its own after sleep/wake or a docker restart.
         "reconnect.backoff.ms": 500,

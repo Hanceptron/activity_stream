@@ -4,7 +4,7 @@ import { StalenessChip } from "./StalenessChip";
 
 // 8 weeks x 7 days (Mon-Sun) GitHub-contributions style grid. Each
 // cell is one day, colored by how much ACTIVITY happened that day
-// (active minutes = summed window_count) - not by the fatigue model.
+// (active minutes = summed window_count).
 // Tiers come from buildActivityRatings(), which bins each day against
 // the median of the user's active days. One green hue at rising
 // intensity answers "which days did I work, and how hard."
@@ -50,6 +50,7 @@ export function MonthCalendar({
   onSelectDay,
   lastRunIso,
   status,
+  nonhumanDays,
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -85,12 +86,13 @@ export function MonthCalendar({
           date: cellDate,
           tier: info ? info.tier : "not_active",
           totalMin: info ? info.totalMin : 0,
+          nonhuman: nonhumanDays ? nonhumanDays.has(key) : false,
           isFuture: cellDate.getTime() > today.getTime(),
         });
       }
     }
     return out;
-  }, [byDay, now]);
+  }, [byDay, now, nonhumanDays]);
 
   return (
     <div className="glass-panel">
@@ -136,12 +138,19 @@ export function MonthCalendar({
 // get the same information.
 function DayCell({ cell, isSelected, onClick }) {
   const meta = RATING_META[cell.tier];
-  const bg = cell.isFuture ? "bg-zinc-900 opacity-30" : meta.bg;
+  // A day with detected automation is painted red, overriding the green
+  // activity shade. Future days stay muted.
+  const bg = cell.isFuture
+    ? "bg-zinc-900 opacity-30"
+    : cell.nonhuman
+      ? "bg-red-500/70"
+      : meta.bg;
+  const numberColor = !cell.isFuture && cell.nonhuman ? "text-white" : meta.number;
   const ring = isSelected ? "ring-2 ring-brand-cyan" : "";
 
   const summary = cell.isFuture
     ? `${formatLocalDay(cell.date)}: not yet`
-    : `${formatLocalDay(cell.date)}: ${meta.text}, ${cell.totalMin} active minute${cell.totalMin === 1 ? "" : "s"}`;
+    : `${formatLocalDay(cell.date)}: ${meta.text}, ${cell.totalMin} active minute${cell.totalMin === 1 ? "" : "s"}${cell.nonhuman ? " · automation detected" : ""}`;
 
   return (
     <button
@@ -156,7 +165,7 @@ function DayCell({ cell, isSelected, onClick }) {
       aria-label={summary}
       title={summary}
     >
-      <span className={`${meta.number} font-medium`}>
+      <span className={`${numberColor} font-medium`}>
         {cell.date.getDate()}
       </span>
     </button>
@@ -180,6 +189,13 @@ function Legend() {
         </div>
       ))}
       <span className="text-zinc-500">More</span>
+      <span className="flex items-center gap-1 ml-2">
+        <span
+          className="inline-block w-2.5 h-2.5 rounded bg-red-500/70"
+          aria-hidden="true"
+        />
+        Automation
+      </span>
     </div>
   );
 }
