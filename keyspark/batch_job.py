@@ -191,11 +191,16 @@ def heatmap_for_range(events, hours, max_event_time):
 
 def day_minute_metrics(events):
     """One row per (day, one-minute window, user) with the four count
-    metrics. Same aggregation as per_window_metrics but keyed by the
-    calendar day instead of a session, so the frontend can pull a
-    single historical day's keystroke timeline. `day` is the local
-    calendar day (host timezone) via date_format, matching the
+    metrics plus a per-minute mouse-movement count (move + scroll), used
+    only by the daily-graph timeline. Same aggregation as
+    per_window_metrics but keyed by the calendar day instead of a session,
+    so the frontend can pull a single historical day's timeline. `day` is
+    the local calendar day (host timezone) via date_format, matching the
     browser's localDayKey on a single-user machine.
+
+    mouse_moves is added here rather than in the shared event_count_exprs()
+    on purpose: that keeps the streaming job's output schema (and its
+    Structured Streaming checkpoint) untouched. Clicks stay a separate count.
     """
     ev = (
         events
@@ -204,7 +209,10 @@ def day_minute_metrics(events):
     )
     return (
         ev.groupBy("day", "time_window", "user")
-        .agg(*event_count_exprs())
+        .agg(
+            *event_count_exprs(),
+            F.count(F.when(F.col("type").isin("move", "scroll"), 1)).alias("mouse_moves"),
+        )
         .select(
             "day",
             F.col("time_window.start").alias("window_start"),
@@ -214,6 +222,7 @@ def day_minute_metrics(events):
             "words",
             "corrections",
             "clicks",
+            "mouse_moves",
         )
     )
 

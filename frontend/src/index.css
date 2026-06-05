@@ -30,6 +30,12 @@ body {
   color: #e4e4e7;
   color-scheme: dark;
   font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  /* Never scroll the page sideways. A Recharts ResponsiveContainer can
+     briefly hold a stale (wider) width when the window narrows, which
+     would otherwise push the whole page horizontally. `clip` contains it
+     without creating a scroll container, so vertical scroll and the fixed
+     background (body::before / ::after) are unaffected. */
+  overflow-x: clip;
 }
 
 /* Fixed, dimmed, slightly-blurred backdrop behind all content.

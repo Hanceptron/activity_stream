@@ -131,7 +131,7 @@ export function DayDetailPanel({ sessions, metrics, dayKey, user, onClose }) {
           anchorMs={anchorMs}
           label={dateLabel}
         />
-        <ActivityPanel metrics={dayMetrics} range="1d" anchorMs={anchorMs} />
+        <ActivityPanel metrics={dayMetrics} range="1d" anchorMs={anchorMs} showMouse />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Heatmap
             data={dayHeatmap}

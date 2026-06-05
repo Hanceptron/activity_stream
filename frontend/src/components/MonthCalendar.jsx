@@ -22,7 +22,10 @@ const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // color that stays legible on each fill.
 const RATING_META = {
   not_active: {
-    bg: "glass-inset",
+    // Borderless faint fill (no glass-inset border) so inactive cells
+    // read as a soft contribution heatmap separated by the grid gap,
+    // not a bordered spreadsheet. Color does the work.
+    bg: "bg-[rgba(24,16,42,0.55)]",
     text: "Not active",
     number: "text-zinc-500",
   },

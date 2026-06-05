@@ -100,6 +100,12 @@ MIN_ROWS = 30
 # excludes them.
 HUMAN_EXCLUDE_USERS = frozenset({"bot-test"})
 
+# Synthetic jiggler/keep-awake demo days seeded into output/events under a real
+# user for the dashboard demo. Like HUMAN_EXCLUDE_USERS they must NOT count as
+# human training truth, but they ARE still scored/flagged at inference. Keyed by
+# local calendar day (YYYY-MM-DD), matching _local_day and the batch.
+HUMAN_EXCLUDE_DAYS = frozenset({"2026-05-11", "2026-05-13", "2026-05-15"})
+
 
 # --------------------------------------------------------------------------
 # Feature engineering (shared by training and scoring -> no feature skew)
@@ -220,6 +226,10 @@ def _labeled_dataset() -> pd.DataFrame:
     """
     events = _load_events()
     events = events[~events["user"].isin(HUMAN_EXCLUDE_USERS)]
+    if HUMAN_EXCLUDE_DAYS:
+        et = (events["event_time"] if "event_time" in events.columns
+              else pd.to_datetime(events["ts"], unit="s"))
+        events = events[~_local_day(et).isin(HUMAN_EXCLUDE_DAYS).to_numpy()]
     human = _window_features(events)
     human["label"] = 0
     synth = _window_features(botgen.synthetic_event_frame())

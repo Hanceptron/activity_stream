@@ -15,7 +15,7 @@ import { MetricsChart } from "./MetricsChart";
 // `anchorMs` overrides the bucketizer's end time (default = now) so a
 // historical day's panel spans that day instead of the trailing
 // window. `label` overrides the card title for the same reason.
-export function ActivityPanel({ metrics, range = "1h", anchorMs, label }) {
+export function ActivityPanel({ metrics, range = "1h", anchorMs, label, showMouse = false }) {
   const now = useNow();
   const cfg = ACTIVITY_RANGES[range] ?? ACTIVITY_RANGES["1h"];
   const buckets = bucketizeWindows(
@@ -32,7 +32,7 @@ export function ActivityPanel({ metrics, range = "1h", anchorMs, label }) {
       <div className="mb-3">
         <IdleStrip buckets={buckets} totalMinutes={totalMinutes} />
       </div>
-      <MetricsChart buckets={buckets} totalMinutes={totalMinutes} />
+      <MetricsChart buckets={buckets} totalMinutes={totalMinutes} showMouse={showMouse} />
     </div>
   );
 }

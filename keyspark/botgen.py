@@ -227,7 +227,14 @@ def write_events_parquet(events, path: str) -> int:
         # (e.g. key on a mouse event, or dx/dy when there is no scroll) and
         # null coords become typed nulls rather than floats.
         arrays.append(pa.array(col, type=field.type, from_pandas=True))
-    pq.write_table(pa.Table.from_arrays(arrays, schema=schema), path)
+    # Write event_time as INT96 to match the Spark streaming sink. Spark's
+    # vectorized Parquet reader cannot read INT64-nanosecond timestamps (a plain
+    # pyarrow write of a timestamp("ns") column), and the batch
+    # ``spark.read.parquet`` would raise PARQUET_COLUMN_DATA_TYPE_MISMATCH on it.
+    # INT96 is exactly what Spark itself writes, so a seeded file reads back the
+    # same way as a captured one.
+    pq.write_table(pa.Table.from_arrays(arrays, schema=schema), path,
+                   use_deprecated_int96_timestamps=True)
     return len(df)
 
 

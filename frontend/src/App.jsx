@@ -97,7 +97,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-zinc-100">
-      <div className="max-w-7xl mx-auto p-6 space-y-6">
+      <div className="max-w-[1600px] mx-auto p-6 space-y-6">
         <Header
           metrics={metricsForUser}
           sessions={sessionsForUser}

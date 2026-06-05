@@ -1,12 +1,14 @@
-// The backend serves timestamps as ISO strings without a timezone
-// suffix (e.g. "2026-05-21T13:44:00.000"). Spark stores them in UTC
-// and pandas writes them without tz info, but JavaScript's Date
-// parser treats a tz-less ISO string as local time. Appending "Z"
-// forces UTC interpretation so the displayed times line up with
-// real wall-clock times.
+// The backend serves timestamps in two shapes: the Spark/pandas
+// endpoints write UTC with a trailing "Z" (e.g.
+// "2026-05-21T13:44:00.000Z"), while batch_status.last_run is a Python
+// isoformat that carries an offset (e.g. "2026-06-05T11:12:15.973451+00:00").
+// A naive (tz-less) string is also possible. JavaScript parses a tz-less
+// ISO string as LOCAL time, so we append "Z" to force UTC, but only when
+// no timezone designator is already present. Appending to "+00:00" would
+// produce an Invalid Date (which previously surfaced as "as of NaN d ago").
 export function parseUtc(s) {
   if (!s) return null;
-  return new Date(s.endsWith("Z") ? s : s + "Z");
+  return new Date(/(Z|[+-]\d{2}:\d{2})$/.test(s) ? s : s + "Z");
 }
 
 // Filter a list of API rows down to a single user. Preserves the
@@ -73,12 +75,14 @@ export function bucketizeWindows(metrics, bucketCount, bucketSizeMin, now = Date
       cur.words += m.words ?? 0;
       cur.corrections += m.corrections ?? 0;
       cur.clicks += m.clicks ?? 0;
+      cur.mouse_moves += m.mouse_moves ?? 0;
     } else {
       sums.set(b, {
         keystrokes: m.keystrokes ?? 0,
         words: m.words ?? 0,
         corrections: m.corrections ?? 0,
         clicks: m.clicks ?? 0,
+        mouse_moves: m.mouse_moves ?? 0,
       });
     }
   }
@@ -96,6 +100,7 @@ export function bucketizeWindows(metrics, bucketCount, bucketSizeMin, now = Date
         words: 0,
         corrections: 0,
         clicks: 0,
+        mouse_moves: 0,
         synthetic: true,
       });
     }
