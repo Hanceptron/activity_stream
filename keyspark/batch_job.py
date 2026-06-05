@@ -53,6 +53,47 @@ def build_session():
     )
 
 
+def _conforming_event_files():
+    """Event part files under output/events/ whose x/y/dx/dy are stored as
+    integers, matching the streaming sink (LongType).
+
+    A file with float/double coords - e.g. a pandas frame seeded with null
+    coords via a plain ``DataFrame.to_parquet`` - makes Spark's vectorized
+    reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and, before this guard,
+    crash-looped the whole batch (and with it the API). Such files are
+    skipped with a warning instead of taking everything down. Cheap: reads
+    only parquet footers, not column data. Seed synthetic data with
+    ``keyspark.botgen.write_events_parquet`` so it conforms and is included.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    good = []
+    skipped = []
+    for path in sorted(Path(EVENTS_PATH).glob("*.parquet")):
+        try:
+            schema = pq.read_schema(path)
+            ok = all(
+                name in schema.names
+                and pa.types.is_integer(schema.field(name).type)
+                for name in ("x", "y", "dx", "dy")
+            )
+        except Exception:
+            ok = False
+        if ok:
+            good.append(str(path))
+        else:
+            skipped.append(path.name)
+    if skipped:
+        shown = ", ".join(skipped[:5]) + (" ..." if len(skipped) > 5 else "")
+        log.warning(
+            "skipping %d non-conforming event file(s) (x/y/dx/dy must be int64): %s",
+            len(skipped),
+            shown,
+        )
+    return good
+
+
 def per_window_metrics(events):
     """One row per (session_id, time_window, user) with the four count metrics."""
 
@@ -211,22 +252,32 @@ def compute_all(spark):
     guard ``spark.read.parquet`` raises ``AnalysisException`` and the
     scheduler tick fails with a misleading traceback every 5 min.
     """
-    if not Path(EVENTS_PATH).exists() or not any(Path(EVENTS_PATH).glob("*.parquet")):
+    if not Path(EVENTS_PATH).exists():
         log.warning(
-            "event archive at %s has no parquet files yet; skipping batch run",
+            "event archive at %s does not exist yet; skipping batch run",
             EVENTS_PATH,
         )
         return
 
-    # Read the part files directly (glob) instead of the directory root.
-    # Reading the root makes Spark honor the Structured Streaming commit
-    # log (output/events/_spark_metadata), which only references files
-    # written since the last streaming checkpoint reset - so a reset
-    # (Kafka offset change, etc.) silently orphans every earlier part file
-    # and the batch loses weeks of history. A plain glob always reads the
-    # whole archive. (Trade-off: it lists every part file each run; if the
-    # file count grows large, add a streaming trigger + periodic compaction.)
-    events = spark.read.parquet(f"{EVENTS_PATH}/*.parquet").cache()
+    # Read the part files directly (explicit file list) instead of the
+    # directory root. Reading the root makes Spark honor the Structured
+    # Streaming commit log (output/events/_spark_metadata), which only
+    # references files written since the last streaming checkpoint reset -
+    # so a reset (Kafka offset change, etc.) silently orphans every earlier
+    # part file and the batch loses weeks of history. Listing files always
+    # reads the whole archive. _conforming_event_files() additionally drops
+    # any file whose x/y/dx/dy are not int64, which would otherwise make the
+    # vectorized reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and crash
+    # every batch. (Trade-off: it lists + footer-reads every part file each
+    # run; if the file count grows large, add a trigger + periodic compaction.)
+    event_files = _conforming_event_files()
+    if not event_files:
+        log.warning(
+            "event archive at %s has no conforming parquet files yet; skipping batch run",
+            EVENTS_PATH,
+        )
+        return
+    events = spark.read.parquet(*event_files).cache()
     try:
         per_window = per_window_metrics(events).cache()
         try:

@@ -5,16 +5,17 @@ streaming and batch jobs and serves them as JSON for the React
 dashboard. Pandas reads parquet directly on each request; no
 caching, no SQL layer. Adequate for a single-user demo.
 
-In addition to serving the parquet data, this process now owns the
-batch job. On startup, ``lifespan`` builds a Spark session and
-synchronously runs ``compute_all`` once so the dashboard isn't
-stale immediately after a restart - uvicorn does not accept
-connections until that completes (~60-120 s on cold start). After
-that, an APScheduler ``BackgroundScheduler`` fires ``compute_all``
-every ``REFRESH_INTERVAL_SEC`` seconds in a worker thread so live
-HTTP traffic is not blocked by Spark calls. The current state of
-the batch loop is exposed via ``/api/batch_status`` and consumed by
-the frontend staleness chips.
+In addition to serving the parquet data, this process owns the
+batch job. On startup, ``lifespan`` builds the Spark session in a
+background thread so uvicorn accepts connections immediately (the
+data endpoints only read parquet from disk, so the dashboard is
+usable while the JVM cold-starts). Once Spark is ready an APScheduler
+``BackgroundScheduler`` fires ``compute_all`` every
+``REFRESH_INTERVAL_SEC`` seconds in a worker thread. A batch failure
+does not take the API down: the session is probed, and the process
+only hard-exits (for the bash restart loop to respawn a fresh JVM)
+when the Spark RPC is actually dead. The batch loop state is exposed
+via ``/api/batch_status`` and consumed by the frontend staleness chips.
 """
 
 import json
@@ -79,28 +80,51 @@ batch_state = BatchState()
 batch_state_lock = threading.Lock()
 
 
+def _spark_alive(spark, timeout_sec: float = 20.0) -> bool:
+    """Probe whether the Spark session's RPC is still usable. Runs a
+    trivial action in a worker thread so a hung RPC (the macOS sleep/wake
+    failure mode) is treated as dead rather than blocking the scheduler
+    forever. Returns False on any error or timeout. Used by ``_run_batch``
+    to tell a genuinely dead session (respawn via os._exit) from a
+    data/transient batch error (keep serving the last-good parquet).
+    """
+    import concurrent.futures
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        executor.submit(lambda: spark.range(1).count()).result(timeout=timeout_sec)
+        return True
+    except Exception:
+        return False
+    finally:
+        # Never block on a hung probe: if the session is dead the caller is
+        # about to os._exit, which tears the thread down with the process.
+        executor.shutdown(wait=False)
+
+
 def _run_batch(spark) -> None:
     """Scheduler entry point. Wraps ``compute_all`` so failures are
-    recorded in ``batch_state``. ``last_run`` is set on both success
-    and failure so the staleness chip always shows a real timestamp.
+    recorded in ``batch_state``. ``last_run`` is set on both success and
+    failure so the staleness chip always shows a real timestamp.
 
-    On any failure we exit the whole process so the outer bash
-    restart loop respawns the API with a fresh Spark session. macOS
-    sleep/wake breaks the Spark RPC permanently for the surviving
-    JVM, and PySpark cannot rebuild a session in-process after the
-    JVM dies. Without an exit, every subsequent 5-minute tick would
-    fail the same way and ``last_run`` would freeze - breaking the
-    `/api/batch_status` freshness contract.
+    On failure we probe the Spark session (``_spark_alive``) to decide:
+      - session dead (macOS sleep/wake permanently breaks the local-mode
+        RPC, and PySpark cannot rebuild a session in-process): os._exit so
+        the outer bash restart loop respawns the API with a fresh JVM.
+      - session still alive (a bad input file or a transient compute
+        error): log it, mark the batch failed, keep the session, and keep
+        serving the last-good parquet. The next tick retries.
+    This keeps one bad event file or a transient hiccup from taking the
+    whole HTTP API down, while preserving the sleep/wake recovery path.
     """
     with batch_state_lock:
         batch_state.last_status = "running"
     try:
         compute_all(spark)
-        # Score liveness right after the batch refresh. This is pure
-        # pandas/sklearn, unrelated to the Spark RPC, so a failure here
-        # must NOT trigger the os._exit respawn below - catch it and keep
-        # serving the last good flags. Imported locally so a missing
-        # scikit-learn never breaks the batch itself.
+        # Score liveness right after the batch refresh. Pure pandas/sklearn,
+        # unrelated to the Spark RPC, so a failure here must not be treated
+        # as a dead session - catch it and keep serving the last good flags.
+        # Imported locally so a missing scikit-learn never breaks the batch.
         try:
             from keyspark.ml import write_liveness
 
@@ -112,59 +136,81 @@ def _run_batch(spark) -> None:
             batch_state.last_error = None
             batch_state.last_run = datetime.now(timezone.utc)
     except Exception as exc:  # noqa: BLE001 - see docstring
-        # Record the failure before exiting so a request that lands
-        # between the failure and process death sees the real state.
-        log.exception("batch run failed - exiting for fresh Spark respawn")
+        # Record the failure first so a request landing now sees real state.
         with batch_state_lock:
             batch_state.last_status = "failed"
             batch_state.last_error = str(exc)
             batch_state.last_run = datetime.now(timezone.utc)
-        # os._exit bypasses uvicorn's signal handlers, the
-        # APScheduler shutdown, and the asyncio loop. That is
-        # intentional - the outer bash loop is the recovery
-        # mechanism, and we want a hard, fast restart rather than a
-        # tidy one. Anything that touches Spark here would also
-        # hang on the same dead RPC.
+        if _spark_alive(spark):
+            # Data/transient error: keep the session and the last-good
+            # parquet, retry next tick. Do NOT exit - the API stays up.
+            log.exception(
+                "batch run failed; Spark still alive - keeping session, "
+                "serving last-good parquet, will retry next tick"
+            )
+            return
+        # Spark session is dead: hard-exit so the bash loop respawns a fresh
+        # JVM. os._exit bypasses uvicorn/APScheduler/asyncio teardown
+        # intentionally - anything touching the dead RPC would hang.
+        log.error("batch run failed and Spark session is dead - exiting for fresh respawn")
         os._exit(1)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Build a long-lived Spark session and schedule the batch every
-    REFRESH_INTERVAL_SEC, kicking the first run off a couple of seconds
-    AFTER startup rather than synchronously. Spark is torn down on
-    shutdown.
+    """Accept HTTP connections immediately and build Spark off the startup
+    path in a background thread, then schedule the batch once it is ready.
 
-    The first batch used to run synchronously here, which blocked
-    uvicorn from accepting connections for the ~60-120 s it takes - so
-    after every respawn (e.g. post-wake) the dashboard was unreachable
-    for that whole window. Yielding first lets the API serve the
-    existing parquet immediately; the scheduler fills in fresh data a
-    few seconds later (batch_status reads "idle" until the first run
-    completes).
+    Building the Spark session (JVM cold-start) takes tens of seconds. Doing
+    it before ``yield`` kept uvicorn from accepting connections for that
+    whole window - so after every respawn (e.g. post-wake) the dashboard was
+    unreachable and every frontend fetch failed. The data endpoints only
+    read parquet from disk, so the API can serve the existing outputs the
+    instant it starts; the scheduler fills in fresh data a few seconds after
+    Spark finishes building (batch_status reads "idle" until the first run).
     """
-    spark = build_session()
-    spark.sparkContext.setLogLevel("WARN")
+    runtime = {"spark": None, "scheduler": None, "stopping": False}
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        _run_batch,
-        "interval",
-        seconds=REFRESH_INTERVAL_SEC,
-        args=[spark],
-        max_instances=1,  # skip tick if previous run is still in progress
-        coalesce=True,    # collapse multiple missed ticks into one run
-        # First run ~2 s after startup (off the uvicorn startup path), not
-        # one full interval later, so fresh data lands quickly without
-        # blocking the dashboard from coming up.
-        next_run_time=datetime.now() + timedelta(seconds=2),
-    )
-    scheduler.start()
+    def _bring_up_spark() -> None:
+        try:
+            spark = build_session()
+            spark.sparkContext.setLogLevel("WARN")
+        except Exception:
+            log.exception(
+                "Spark session build failed; batch disabled, still serving existing parquet"
+            )
+            return
+        if runtime["stopping"]:
+            spark.stop()
+            return
+        runtime["spark"] = spark
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            _run_batch,
+            "interval",
+            seconds=REFRESH_INTERVAL_SEC,
+            args=[spark],
+            max_instances=1,  # skip tick if previous run is still in progress
+            coalesce=True,    # collapse multiple missed ticks into one run
+            # First run ~2 s after Spark is ready, not one full interval
+            # later, so fresh data lands quickly.
+            next_run_time=datetime.now() + timedelta(seconds=2),
+        )
+        scheduler.start()
+        runtime["scheduler"] = scheduler
+
+    threading.Thread(target=_bring_up_spark, name="spark-init", daemon=True).start()
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
-        spark.stop()
+        # May run before the background thread finished building Spark; the
+        # stopping flag makes that thread skip starting the scheduler, and we
+        # tear down whatever already exists.
+        runtime["stopping"] = True
+        if runtime["scheduler"] is not None:
+            runtime["scheduler"].shutdown(wait=False)
+        if runtime["spark"] is not None:
+            runtime["spark"].stop()
 
 
 app = FastAPI(title="KeySpark API", lifespan=lifespan)

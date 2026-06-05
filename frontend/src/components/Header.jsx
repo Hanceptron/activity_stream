@@ -15,9 +15,10 @@ import { UserSelector } from "./UserSelector";
 // drives both the live-status freshness check and the session
 // timer. Cleanup on unmount.
 //
-// Live indicator dual-encodes via shape AND color AND word:
-//   live = green dot (round)    + "live"
-//   offline = red square        + "offline"
+// Live indicator tri-states via shape AND color AND word:
+//   live         = green dot (round)        + "live"
+//   reconnecting = amber dot (round, pulse) + "reconnecting"  (backend unreachable)
+//   offline      = red square               + "offline"       (data genuinely stale)
 // role="status" makes the span a live region so screen readers
 // announce the transition rather than needing the user to revisit.
 export function Header({
@@ -26,6 +27,7 @@ export function Header({
   users,
   selectedUser,
   onSelectUser,
+  connectionLost = false,
 }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -36,7 +38,12 @@ export function Header({
 
   // Freshness rationale (window_end, 2-min threshold) now lives in
   // isActiveNow, shared with the day-detail live badge so they agree.
+  // connectionLost (the /api/metrics poll is failing) takes priority: we
+  // cannot confirm liveness while the backend is unreachable, so show a
+  // distinct "reconnecting" state rather than letting the frozen metrics
+  // age into a misleading "offline" while the user is still typing.
   const isLive = isActiveNow(metrics, now);
+  const status = connectionLost ? "reconnecting" : isLive ? "live" : "offline";
 
   const sessionMs = sessionTimer(metrics, 5 * 60 * 1000, now);
   const todays = getTodaysSessions(sessions, now);
@@ -100,13 +107,15 @@ export function Header({
         >
           <span
             className={`inline-block w-2 h-2 transition-all ${
-              isLive
+              status === "live"
                 ? "bg-green-500 rounded-full"
-                : "bg-red-500 rounded-none"
+                : status === "reconnecting"
+                  ? "bg-amber-400 rounded-full animate-pulse"
+                  : "bg-red-500 rounded-none"
             }`}
             aria-hidden="true"
           />
-          <span>{isLive ? "live" : "offline"}</span>
+          <span>{status}</span>
         </span>
       </div>
     </header>

@@ -82,6 +82,15 @@ FEATURES = [
 WINDOW_THRESHOLD = 0.8
 MIN_FLAG_WINDOWS = 2
 
+# A one-minute window needs at least this many events before its shape features
+# are meaningful. With fewer than 3 events every inter-event-interval CV is 0 by
+# construction (see _cv) and the mouse-step features need >= 2 moves, so a
+# near-empty minute (a single stray keystroke or mouse twitch) collapses to an
+# all-zeros feature row that is indistinguishable from a low-variability bot.
+# Such windows carry no evidence of automation, so they are dropped from
+# training and can never raise a flag - we abstain rather than accuse.
+MIN_WINDOW_EVENTS = 5
+
 # Refuse to train/evaluate on too little data to be meaningful.
 MIN_ROWS = 30
 
@@ -150,6 +159,7 @@ def _one_window(user, window_start, g: pd.DataFrame) -> dict:
     return {
         "user": user,
         "window_start": window_start,
+        "n_events": n,
         "key_diversity": key_diversity,
         "ks_iei_cv": _cv(t[is_kd]),
         "move_iei_cv": _cv(t[is_mv]),
@@ -161,19 +171,23 @@ def _one_window(user, window_start, g: pd.DataFrame) -> dict:
 
 
 def _window_features(df: pd.DataFrame) -> pd.DataFrame:
-    """One row of FEATURES per (user, one-minute window)."""
+    """One row of FEATURES per (user, one-minute window), excluding near-empty
+    windows (< MIN_WINDOW_EVENTS events) whose shape features are degenerate
+    and carry no evidence either way.
+    """
     df = _prepare(df).dropna(subset=["event_time"]).sort_values(
         ["user", "event_time"]
     )
     if df.empty:
-        return pd.DataFrame(columns=["user", "window_start", *FEATURES])
+        return pd.DataFrame(columns=["user", "window_start", "n_events", *FEATURES])
     df["window_start"] = df["event_time"].dt.floor("min")
     df["t"] = df["event_time"].astype("int64") / 1e9
     rows = [
         _one_window(user, ws, g)
         for (user, ws), g in df.groupby(["user", "window_start"], sort=False)
     ]
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    return out[out["n_events"] >= MIN_WINDOW_EVENTS].reset_index(drop=True)
 
 
 def _load_events() -> pd.DataFrame:

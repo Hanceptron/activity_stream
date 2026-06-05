@@ -36,10 +36,10 @@ export default function App() {
   // The top Activity card always shows the last 60 minutes (5 s poll);
   // there is no range selector anymore. This single /api/metrics poll
   // feeds the header, the metric cards, and the Activity card.
-  const metrics = usePolling("/api/metrics", 5_000);
-  const sessions = usePolling("/api/sessions", 30_000);
-  const baseline = usePolling("/api/baseline", 5 * 60_000);
-  const batchStatus = usePolling("/api/batch_status", 30_000);
+  const { data: metrics, failing: metricsFailing } = usePolling("/api/metrics", 5_000);
+  const { data: sessions } = usePolling("/api/sessions", 30_000);
+  const { data: baseline } = usePolling("/api/baseline", 5 * 60_000);
+  const { data: batchStatus } = usePolling("/api/batch_status", 30_000);
 
   const lastBatchRun = batchStatus?.last_run ?? null;
   const batchStatusName = batchStatus?.status ?? "idle";
@@ -81,7 +81,7 @@ export default function App() {
   // Per-day human/non-human flags for the calendar (red = automation
   // detected). Scoped to the rendered user; a null url skips the fetch
   // until a user is known.
-  const liveness = usePolling(
+  const { data: liveness } = usePolling(
     effectiveUser ? `/api/liveness?user=${effectiveUser}` : null,
     30_000,
   );
@@ -104,6 +104,7 @@ export default function App() {
           users={users}
           selectedUser={effectiveUser}
           onSelectUser={setSelectedUser}
+          connectionLost={metricsFailing}
         />
         <section className="space-y-4">
           <ActivityGauge metrics={metricsForUser} range="1h" />

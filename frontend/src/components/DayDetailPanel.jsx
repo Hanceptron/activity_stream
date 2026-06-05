@@ -82,11 +82,11 @@ export function DayDetailPanel({ sessions, metrics, dayKey, user, onClose }) {
   // Per-day timeline + heatmap from the batch outputs. user is always
   // set when the panel renders (App passes effectiveUser), but guard
   // the URL anyway so a transient null doesn't fetch "/...user=null".
-  const dayMetrics = usePolling(
+  const { data: dayMetrics } = usePolling(
     user ? `/api/day_metrics?day=${dayKey}&user=${user}` : null,
     30_000,
   );
-  const dayHeatmap = usePolling(
+  const { data: dayHeatmap } = usePolling(
     user ? `/api/heatmap_day?day=${dayKey}&user=${user}` : null,
     30_000,
   );
@@ -94,7 +94,7 @@ export function DayDetailPanel({ sessions, metrics, dayKey, user, onClose }) {
   // screen and clip any external-monitor tail. Rarely changes, so a
   // slow poll is plenty. Falls back to MacBook 16" defaults until the
   // first response lands.
-  const display = usePolling("/api/display", 5 * 60_000);
+  const { data: display } = usePolling("/api/display", 5 * 60_000);
   const frameW = display?.grid_w ?? 108;
   const frameH = display?.grid_h ?? 70;
 
