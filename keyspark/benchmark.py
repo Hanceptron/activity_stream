@@ -1,27 +1,19 @@
-"""KeySpark throughput / latency benchmark.
+"""KeySpark throughput / latency benchmark - the Big-Data performance numbers in
+the paper and demo. Two sub-commands:
 
-Produces the Big-Data performance numbers reported in the paper and the
-demo. Two sub-commands:
-
-  batch     - times the Spark batch analytical pipeline (sessionize +
-              per-window counts + per-session regression summaries +
-              per-user baseline) over the full event archive and reports
-              events/sec, excluding JVM/session startup.
-
-  streaming - replays the event archive through Spark Structured
-              Streaming (parquet source, ``availableNow`` trigger, the
-              same 1-minute windowed aggregation the live job runs) and
-              reads Spark's own StreamingQueryProgress to report
-              processed rows/sec (throughput) and per-micro-batch
-              duration (latency).
+  batch     - time the Spark batch analytical pipeline (sessionize + per-window
+              counts + per-session summaries + per-user baseline) over the full
+              archive; reports events/sec, excluding JVM/session startup.
+  streaming - replay the archive through Structured Streaming (parquet source,
+              availableNow trigger, the same 1-minute windowed aggregation) and
+              read Spark's StreamingQueryProgress for rows/sec and per-micro-batch
+              latency.
 
   uv run python -m keyspark.benchmark batch
   uv run python -m keyspark.benchmark streaming
 
-Both read only ``output/events/`` and write nothing back into the live
-output directories (the streaming benchmark uses a throwaway checkpoint
-and the ``noop`` sink), so running a benchmark never disturbs the
-dashboard or the live pipeline.
+Both read only output/events/ and write nothing back into the live output dirs
+(throwaway checkpoint + noop sink), so a benchmark never disturbs the pipeline.
 """
 
 from __future__ import annotations
@@ -49,31 +41,37 @@ from keyspark.streaming_job import WATERMARK, WINDOW_DURATION, event_schema
 
 log = logging.getLogger("keyspark.benchmark")
 
-# Throwaway checkpoint so the streaming benchmark reprocesses the whole
-# archive every run instead of resuming from a previous benchmark.
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+# Throwaway checkpoint so the streaming benchmark reprocesses the whole archive
+# every run instead of resuming from a previous benchmark.
 BENCH_CHECKPOINT = "output/checkpoint/_benchmark"
 
-# All physical event part files, regardless of the streaming sink's
-# _spark_metadata commit log. A bare directory read honours that log,
-# which after a checkpoint reset only references recent events; the glob
-# benchmarks over the full recorded archive.
+# All physical event part files, ignoring the streaming sink's _spark_metadata
+# (a bare directory read honours that log, which after a reset only references
+# recent events; the glob benchmarks the full archive).
 EVENTS_GLOB = f"{EVENTS_PATH}/part-*.parquet"
 
-# Throwaway dir the streaming benchmark stages the archive into. A clean
-# dir with no _spark_metadata forces Structured Streaming to ingest every
-# recorded event rather than just the commit-logged ones.
+# Throwaway dir the streaming benchmark stages the archive into (a clean dir with
+# no _spark_metadata forces ingestion of every recorded event).
 STAGE_DIR = "output/_benchmark_events"
 
 
+# --------------------------------------------------------------------------
+# Helper
+# --------------------------------------------------------------------------
 def _as_dict(progress) -> dict:
-    # PySpark returns recentProgress entries as dicts on some versions
-    # and as StreamingQueryProgress objects (with a .json() method) on
-    # others. Normalise to a dict either way.
+    # PySpark returns recentProgress entries as dicts on some versions and as
+    # StreamingQueryProgress objects (with .json()) on others. Normalise to dict.
     if isinstance(progress, dict):
         return progress
     return json.loads(progress.json())
 
 
+# --------------------------------------------------------------------------
+# Batch benchmark
+# --------------------------------------------------------------------------
 def benchmark_batch() -> dict:
     """Time the batch analytical core over the full event archive."""
     spark = build_session()
@@ -85,9 +83,8 @@ def benchmark_batch() -> dict:
         n_events = events.count()
         read_s = time.perf_counter() - t0
 
-        # Time sessionization + per-window counts + per-session regression
-        # summaries + the per-user baseline. count() forces execution; we
-        # write nothing to disk so the live outputs are untouched.
+        # Time sessionization + per-window counts + per-session summaries + the
+        # per-user baseline. count() forces execution; nothing is written to disk.
         t1 = time.perf_counter()
         per_window = per_window_metrics(events).cache()
         n_windows = per_window.count()
@@ -109,9 +106,12 @@ def benchmark_batch() -> dict:
         spark.stop()
 
 
+# --------------------------------------------------------------------------
+# Streaming benchmark
+# --------------------------------------------------------------------------
 def benchmark_streaming() -> dict:
-    """Replay the archive through Structured Streaming and read Spark's
-    own progress metrics for throughput and per-micro-batch latency.
+    """Replay the archive through Structured Streaming and read Spark's own
+    progress metrics for throughput and per-micro-batch latency.
     """
     shutil.rmtree(BENCH_CHECKPOINT, ignore_errors=True)
     shutil.rmtree(STAGE_DIR, ignore_errors=True)
@@ -127,9 +127,8 @@ def benchmark_streaming() -> dict:
         stream = (
             spark.readStream.schema(schema)
             # maxFilesPerTrigger chunks the staged archive into several
-            # micro-batches so the per-batch latency distribution is
-            # meaningful instead of one single giant batch.
-            .option("maxFilesPerTrigger", 4)
+            # micro-batches so the per-batch latency distribution is meaningful.
+            .option("maxFilesPerTrigger", 4)   # tune: files per micro-batch
             .parquet(STAGE_DIR)
             .withWatermark("event_time", WATERMARK)
         )
@@ -183,6 +182,9 @@ def benchmark_streaming() -> dict:
         shutil.rmtree(STAGE_DIR, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,

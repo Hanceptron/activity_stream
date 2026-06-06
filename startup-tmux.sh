@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # KeySpark - tmux startup.
 #
-# Starts the four long-running processes (agent, streaming, backend,
-# frontend) inside a single detached tmux session named "keyspark",
-# each in its own window so logs stay separated.
+# Starts the five long-running processes (agent, streaming, backend,
+# frontend, watchdog) inside a single detached tmux session named
+# "keyspark", each in its own window so logs stay separated.
 #
 # The Mac is allowed to sleep and lock normally — no `caffeinate`
 # wrappers. Every process is wrapped in run-with-backoff.sh, which
@@ -12,14 +12,20 @@
 # tap is silently killed during sleep and cannot be rebuilt in-process),
 # so the backoff loop respawns a fresh interpreter with a working tap.
 #
+# The backoff loop only covers processes that EXIT. The watchdog window
+# (keyspark.watchdog) covers the "alive but wedged" case the backoff loop
+# misses: after wake it bounces streaming + backend (whose Spark RPC dies
+# on sleep), and it restarts either if their output goes stale. See
+# keyspark/watchdog.py.
+#
 # Usage:
 #   ./startup-tmux.sh                       # start everything detached
 #   tmux attach -t keyspark              # look at the live logs
 #   tmux kill-session -t keyspark        # stop everything
 #
 # Inside tmux:
-#   Ctrl+B then 0/1/2/3 - cycle windows
-#   Ctrl+B then D       - detach without stopping
+#   Ctrl+B then 0-4 - cycle windows (agent, streaming, backend, frontend, watchdog)
+#   Ctrl+B then D   - detach without stopping
 
 set -u
 
@@ -89,6 +95,12 @@ tmux new-window -t keyspark -n backend \
 
 tmux new-window -t keyspark -n frontend \
   "cd $ROOT/frontend && npm run dev"
+
+# Self-heal supervisor. Restarts streaming/backend when they wedge alive
+# (the case run-with-backoff cannot see). Wrapped in the backoff loop too
+# so the watchdog itself recovers if it ever crashes.
+tmux new-window -t keyspark -n watchdog \
+  "$ROOT/run-with-backoff.sh uv run python -m keyspark.watchdog"
 
 echo
 echo "KeySpark started in detached tmux session 'keyspark'."

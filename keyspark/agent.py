@@ -1,26 +1,18 @@
-"""KeySpark input capture agent.
+"""KeySpark input capture agent. Captures keyboard and mouse events on macOS via
+pynput and emits one JSON object per event to stdout or Kafka. Needs macOS
+Accessibility + Input Monitoring and cannot run in a container (see README).
 
-Captures keyboard and mouse events on macOS via pynput and emits one
-JSON object per event to stdout or Kafka. See README for the macOS
-permissions this needs and why it cannot run in a container.
-
-Sleep/wake recovery: on macOS the kernel kills pynput's event tap
-during sleep. In-process re-creation of pynput listeners after wake
-is unreliable - the new Listener threads report is_alive() True but
-the CGEventTap can be silently dead, so the agent looks healthy
-while producing nothing. Instead, on
-NSWorkspaceDidWakeNotification the agent flags itself for exit; the
-outer `while true` restart loop in startup-tmux.sh respawns a fresh
-Python process whose CGEventTap is freshly installed.
-NSWorkspaceWillSleepNotification triggers a Kafka flush so in-flight
-events drain before the socket dies. A second guard is the
-HID-idle watchdog: if macOS reports the user as actively interacting
-but the agent has not produced an event in WATCHDOG_SILENT_SECONDS,
-the listener is presumed dead and the same exit/respawn path runs.
-The main loop spins the NSRunLoop so the notification center can
-dispatch - `time.sleep` alone would never see them. On non-macOS
-platforms the observer and the watchdog both no-op; recovery falls
-back to the outer restart loop.
+Sleep/wake recovery: macOS kills pynput's event tap during sleep, and in-process
+re-creation of listeners after wake is unreliable (the new Listener threads report
+is_alive() True but the CGEventTap can be silently dead, so the agent looks
+healthy while producing nothing). So on NSWorkspaceDidWakeNotification the agent
+flags itself for exit and the outer restart loop respawns a fresh process with a
+fresh tap; NSWorkspaceWillSleepNotification triggers a Kafka flush before the
+socket dies. A second guard is the HID-idle watchdog: if macOS reports the user
+as actively interacting but the agent has produced nothing for
+WATCHDOG_SILENT_SECONDS, the listener is presumed dead and the same exit/respawn
+path runs. The main loop spins the NSRunLoop so notifications can dispatch. On
+non-macOS the observer and watchdog no-op.
 """
 
 from __future__ import annotations
@@ -36,25 +28,25 @@ from pathlib import Path
 
 from pynput import keyboard, mouse
 
-USER_ID = "user-001"
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+USER_ID = "user-001"                 # tune: user id stamped on every event
 
-KAFKA_BOOTSTRAP = "localhost:9092"
-KAFKA_TOPIC = "events.raw"
+KAFKA_BOOTSTRAP = "localhost:9092"   # tune: Kafka broker address
+KAFKA_TOPIC = "events.raw"           # tune: destination topic
 
-# Cap mouse-move emission at ~50/sec. Clicks and scrolls are never throttled.
-MOVE_MIN_INTERVAL = 0.020
+MOVE_MIN_INTERVAL = 0.020            # tune: min s between mouse-move events (~50/s cap)
 
-# Watchdog: if the OS reports the user has interacted with input devices
-# within this many seconds but the agent has not emitted an event for at
-# least WATCHDOG_SILENT_SECONDS, the listener is presumed dead and we
-# request exit so the outer restart loop can respawn a fresh process.
-WATCHDOG_ACTIVE_SECONDS = 5.0
-WATCHDOG_SILENT_SECONDS = 30.0
-WATCHDOG_CHECK_INTERVAL = 5.0
+# Watchdog: if the OS reports input within WATCHDOG_ACTIVE_SECONDS but the agent
+# has emitted nothing for WATCHDOG_SILENT_SECONDS, the listener is presumed dead
+# and we exit so the outer restart loop respawns a fresh process.
+WATCHDOG_ACTIVE_SECONDS = 5.0        # tune: HID recency that counts as "user active"
+WATCHDOG_SILENT_SECONDS = 30.0       # tune: silence-while-active before presuming dead
+WATCHDOG_CHECK_INTERVAL = 5.0        # tune: watchdog poll interval
 
-# pyobjc is only available (and only meaningful) on macOS. Importing
-# inside a try/except lets the agent still run on Linux for testing,
-# where wake recovery is a no-op.
+# pyobjc is only available (and only meaningful) on macOS. Importing inside
+# try/except lets the agent still run on Linux for testing (wake recovery no-ops).
 try:
     import objc
     from AppKit import NSScreen, NSWorkspace
@@ -69,10 +61,12 @@ except ImportError:
 log = logging.getLogger("keyspark.agent")
 
 
+# --------------------------------------------------------------------------
+# Sinks
+# --------------------------------------------------------------------------
 def _key_id(key) -> str:
-    # Stable id only. Printable keys → the character ("a", "A", "1"),
-    # special keys → pynput's "Key.space"-style repr. Downstream uses
-    # this for timing / n-gram features and MUST NOT persist raw text.
+    # Stable id only. Printable keys -> the character; special keys -> pynput's
+    # "Key.space"-style repr. Used for timing/n-gram features; never persist raw text.
     if isinstance(key, keyboard.KeyCode) and key.char is not None:
         return key.char
     return str(key)
@@ -84,9 +78,8 @@ def _stdout_sink(event: dict) -> None:
 
 
 def _on_kafka_error(err) -> None:
-    # confluent-kafka calls this from its background poll thread when
-    # the broker becomes unreachable or returns a delivery error.
-    # Without it, post-sleep socket failures vanish silently.
+    # confluent-kafka calls this from its poll thread when the broker is
+    # unreachable; without it, post-sleep socket failures vanish silently.
     log.warning("kafka producer error: %s", err)
 
 
@@ -96,13 +89,12 @@ def _kafka_sink():
     producer = Producer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
         "client.id": "keyspark-agent",
-        # Reconnect with exponential backoff so the socket recovers
-        # on its own after sleep/wake or a docker restart.
+        # Reconnect with backoff so the socket recovers on its own after
+        # sleep/wake or a docker restart.
         "reconnect.backoff.ms": 500,
         "reconnect.backoff.max.ms": 10_000,
         "socket.keepalive.enable": True,
-        # Retry transient send failures; capped low because input
-        # events are cheap to lose if the broker really is down.
+        # Retry transient sends; capped low because input events are cheap to lose.
         "message.send.max.retries": 5,
         "retry.backoff.ms": 200,
         "error_cb": _on_kafka_error,
@@ -119,6 +111,9 @@ def _kafka_sink():
     return send, flush
 
 
+# --------------------------------------------------------------------------
+# pynput listeners
+# --------------------------------------------------------------------------
 def _build_listeners(send):
     last_move = 0.0
 
@@ -156,12 +151,10 @@ def _build_listeners(send):
 
 
 class _ListenerSupervisor:
-    # Owns the active pynput listeners for the lifetime of the
-    # process. We deliberately do NOT support in-process restart -
-    # re-creating Listener objects on the fly after a macOS sleep
-    # leaves the CGEventTap in a quietly broken state. Wake recovery
-    # exits the whole process instead, so the outer bash restart loop
-    # respawns a clean Python interpreter.
+    # Owns the active pynput listeners for the process lifetime. No in-process
+    # restart on purpose: re-creating Listeners after a macOS sleep leaves the
+    # CGEventTap quietly broken, so wake recovery exits the whole process and the
+    # outer bash loop respawns a clean interpreter.
     def __init__(self, send):
         self._send = send
         self._kb = None
@@ -189,12 +182,14 @@ class _ListenerSupervisor:
         )
 
 
+# --------------------------------------------------------------------------
+# macOS wake/sleep observer + HID idle + display size
+# --------------------------------------------------------------------------
 if _HAS_PYOBJC:
     class _WakeObserver(NSObject):
-        # NSObject subclass so NSNotificationCenter can call the
-        # `workspace…:` selectors. pyobjc bridges trailing-underscore
-        # method names to ObjC selectors with trailing colons, so
-        # `workspaceDidWake_` becomes `workspaceDidWake:`.
+        # NSObject subclass so NSNotificationCenter can call the workspace…:
+        # selectors. pyobjc maps trailing-underscore names to trailing-colon
+        # selectors (workspaceDidWake_ -> workspaceDidWake:).
         def initWithCallbacks_(self, callbacks):
             self = objc.super(_WakeObserver, self).init()
             if self is None:
@@ -216,11 +211,10 @@ if _HAS_PYOBJC:
 
 
 def _install_wake_observer(on_wake, on_sleep):
-    # Returns (observer, pump): the observer must outlive the run
-    # loop or NSNotificationCenter will drop it; `pump(seconds)`
-    # blocks the caller while spinning the NSRunLoop so any pending
-    # sleep/wake notifications can fire. Falls back to time.sleep on
-    # non-macOS systems where pyobjc isn't available.
+    # Returns (observer, pump): the observer must outlive the run loop or
+    # NSNotificationCenter drops it; pump(seconds) blocks while spinning the
+    # NSRunLoop so pending sleep/wake notifications can fire. Falls back to
+    # time.sleep on non-macOS.
     if not _HAS_PYOBJC:
         log.warning(
             "pyobjc not available; wake-recovery disabled. "
@@ -246,12 +240,10 @@ def _install_wake_observer(on_wake, on_sleep):
 
 
 def _hid_idle_seconds() -> float | None:
-    # Read HIDIdleTime out of IOHIDSystem via `ioreg`. Returns
-    # seconds since the last HID (keyboard/mouse/trackpad) event, or
-    # None on any parse failure. This is the same value macOS uses
-    # internally for the "user is idle" state, so it tells us whether
-    # the user is actually interacting with the machine regardless of
-    # whether our pynput listener noticed.
+    # Seconds since the last HID (keyboard/mouse/trackpad) event, read from
+    # IOHIDSystem via ioreg. None on any failure. Same value macOS uses for its
+    # "user is idle" state, so it tells us whether the user is actually
+    # interacting regardless of whether our pynput listener noticed.
     try:
         out = subprocess.check_output(
             ["ioreg", "-c", "IOHIDSystem", "-rd1"],
@@ -273,15 +265,11 @@ def _hid_idle_seconds() -> float | None:
 
 
 def _record_display_size() -> None:
-    # Write the primary display's size (in points) to
-    # output/display.json so the dashboard can frame the mouse heatmap
-    # to the real screen and clip any external-monitor tail. The
-    # magnitude of NSScreen.mainScreen().frame().size matches pynput's
-    # mouse coordinate range, which is what the heatmap is built from.
-    # Rewritten on every startup (and the agent restarts on wake), so
-    # the value follows the current monitor setup. Screen queries do
-    # not require Accessibility, so this works even when input capture
-    # is not yet permitted. Best-effort: any failure is non-fatal.
+    # Write the primary display size (points) to output/display.json so the
+    # dashboard can frame the mouse heatmap to the real screen. The magnitude of
+    # NSScreen.mainScreen().frame().size matches pynput's coordinate range.
+    # Rewritten on every startup, so it follows the current monitor setup. Screen
+    # queries do not need Accessibility. Best-effort: any failure is non-fatal.
     if not _HAS_PYOBJC or NSScreen is None:
         return
     try:
@@ -295,9 +283,11 @@ def _record_display_size() -> None:
         log.warning("could not record display size", exc_info=True)
 
 
+# --------------------------------------------------------------------------
+# Main loop
+# --------------------------------------------------------------------------
 def main() -> None:
-    # Logging goes to stderr so it does not corrupt the JSON event
-    # stream on stdout when --sink stdout is used.
+    # Logging to stderr so it never corrupts the JSON event stream on stdout.
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stderr,
@@ -316,16 +306,11 @@ def main() -> None:
     else:
         raw_send = _stdout_sink
 
-    # Heartbeat for the watchdog. Each event we successfully hand to
-    # the sink resets this to wall-clock now. The watchdog uses it to
-    # tell "agent is silent because user is idle" (fine) apart from
-    # "agent is silent because the event tap is dead" (force respawn).
-    # `events_seen` separately tracks whether ANY event has ever been
-    # observed - the watchdog refuses to fire until at least one event
-    # has been captured, which is the most reliable way to tell
-    # "pynput is working" from "pynput never had permission". This
-    # works under both Accessibility and Input Monitoring TCC grants
-    # without distinguishing between them.
+    # Watchdog heartbeat: each event handed to the sink resets last_event_ts; the
+    # watchdog uses it to tell "silent because idle" (fine) from "silent because
+    # the tap is dead" (respawn). events_seen gates the watchdog so it refuses to
+    # fire until at least one event has been captured (tells "pynput works" from
+    # "pynput never had permission").
     last_event_ts = time.time()
     events_seen = False
 
@@ -335,11 +320,9 @@ def main() -> None:
         events_seen = True
         raw_send(event)
 
-    # Warn loudly when the OS reports no Accessibility permission.
-    # This is not the gate for the watchdog (Input Monitoring alone is
-    # usually enough for pynput's mouse tap, and AXIsProcessTrusted only
-    # checks the Accessibility entry), but it is the most common reason
-    # for the agent to sit silent, so we surface it in the tmux pane.
+    # Warn loudly when the OS reports no Accessibility permission - the most common
+    # reason the agent sits silent. (Not the watchdog gate: Input Monitoring alone
+    # is usually enough for pynput's mouse tap.)
     if AXIsProcessTrusted is not None and not bool(AXIsProcessTrusted()):
         log.warning(
             "macOS Accessibility not granted to this process - pynput "
@@ -356,10 +339,9 @@ def main() -> None:
         USER_ID,
     )
 
-    # Cross-thread "exit cleanly" flag. Set from the wake handler
-    # (which runs on the main thread inside the NSRunLoop pump) and
-    # from the watchdog logic below. The main loop tests it every
-    # pump cycle and breaks out, letting the finally block flush.
+    # Cross-thread "exit cleanly" flag, set from the wake handler (runs on the main
+    # thread inside the pump) and the watchdog below. The main loop tests it each
+    # cycle and breaks so the finally block can flush.
     exit_requested = threading.Event()
 
     def on_sleep() -> None:
@@ -388,9 +370,8 @@ def main() -> None:
             last_watchdog_check = now
 
             if not events_seen:
-                # Never observed an event - we have no proof pynput is
-                # actually working, so the watchdog would just crash-loop
-                # on the no-permission state. Stay quiet.
+                # No event ever observed -> no proof pynput works, so staying quiet
+                # avoids crash-looping on the no-permission state.
                 continue
             idle = _hid_idle_seconds()
             if idle is None:

@@ -1,27 +1,14 @@
-"""KeySpark human vs non-human (liveness) classifier.
+"""KeySpark human vs non-human (liveness) classifier. Per one-minute window,
+decides whether activity came from a real person or input automation (mouse
+jiggler, auto-typer, auto-clicker, keep-awake). The signal is the natural
+irregularity and variety of human input vs the regularity of a bot.
 
-Detects whether a minute of activity was produced by a real person or by
-input automation (mouse jiggler, auto-typer, auto-clicker). The signal is
-the natural irregularity and variety of human input: humans vary their
-timing, movement, and keys; bots are regular and repetitive.
+Two classes, both run through the SAME featurizer (no train/serve skew):
+  - human (label 0): real recorded events in output/events.
+  - non-human (label 1): synthetic bot events from keyspark.botgen.
 
-Two classes:
-  - human (label 0): the real recorded events in ``output/events``.
-  - non-human (label 1): synthetic bot events from ``keyspark.botgen``,
-    featurized through the SAME function as real events (no train/serve
-    feature skew).
-
-Features are computed per one-minute window and are deliberately
-cross-modal (keyboard AND mouse) and shape-based (regularity / diversity
-/ input mix), not volume-based:
-  - key_diversity : distinct keys / keystrokes (low for an auto-typer)
-  - ks_iei_cv     : coeff. of variation of inter-keystroke intervals
-  - move_iei_cv   : coeff. of variation of inter-mouse-move intervals
-  - iei_cv        : coeff. of variation of all inter-event intervals
-  - step_mean     : mean mouse-move step size (px)
-  - step_cv       : coeff. of variation of mouse-move step size
-  - mouse_fraction: mouse events / all events (jiggler ~1.0, typer ~0.0)
-
+Features are per-window, cross-modal (keyboard AND mouse), and shape-based
+(regularity / diversity / input mix), not volume-based - see FEATURES below.
 Model: scikit-learn RandomForestClassifier (class_weight balanced).
 
   uv run python -m keyspark.ml train       # fit on all windows, persist
@@ -29,8 +16,8 @@ Model: scikit-learn RandomForestClassifier (class_weight balanced).
   uv run python -m keyspark.ml predict     # per-window non-human probability
   uv run python -m keyspark.ml score       # write output/liveness.parquet
 
-The model and scoring read only ``output/events`` and the synthetic
-generator; they do not depend on the batch job's session summaries.
+Reads only output/events and the synthetic generator; does not depend on the
+batch job's session summaries.
 """
 
 from __future__ import annotations
@@ -59,12 +46,23 @@ from keyspark import botgen
 
 log = logging.getLogger("keyspark.ml")
 
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
 EVENTS_PATH = "output/events"
 MODEL_DIR = Path("output/models")
 MODEL_PATH = MODEL_DIR / "liveness_classifier.joblib"
 METRICS_PATH = MODEL_DIR / "metrics.json"
 LIVENESS_PATH = "output/liveness.parquet"
 
+# The per-window shape features, in a stable order:
+#   key_diversity : distinct keys / keystrokes (low for an auto-typer)
+#   ks_iei_cv     : CV of inter-keystroke intervals
+#   move_iei_cv   : CV of inter-mouse-move intervals
+#   iei_cv        : CV of all inter-event intervals (low for a fixed-cadence timer)
+#   step_mean     : mean mouse-move step size (px)
+#   step_cv       : CV of mouse-move step size (low for rigid micro-geometry)
+#   mouse_fraction: mouse events / all events (jiggler ~1.0, typer ~0.0)
 FEATURES = [
     "key_diversity",
     "ks_iei_cv",
@@ -75,46 +73,35 @@ FEATURES = [
     "mouse_fraction",
 ]
 
-# A day is flagged non-human only on a SUSTAINED automated burst: at least
-# MIN_FLAG_WINDOWS one-minute windows scoring >= WINDOW_THRESHOLD. Requiring
-# more than one window stops a single odd human minute from painting a day
-# red (human scores are ~all near 0; isolated outliers do happen).
-WINDOW_THRESHOLD = 0.8
-MIN_FLAG_WINDOWS = 2
+# A day is flagged non-human only on a SUSTAINED burst: >= MIN_FLAG_WINDOWS
+# one-minute windows scoring >= WINDOW_THRESHOLD. Requiring >1 window stops one
+# odd human minute from painting a day red.
+WINDOW_THRESHOLD = 0.8   # tune: per-window non-human probability to count as flagged
+MIN_FLAG_WINDOWS = 2     # tune: flagged windows in a day before the day flags
 
-# A one-minute window needs at least this many events before its shape features
-# are meaningful. With fewer than 3 events every inter-event-interval CV is 0 by
-# construction (see _cv) and the mouse-step features need >= 2 moves, so a
-# near-empty minute (a single stray keystroke or mouse twitch) collapses to an
-# all-zeros feature row that is indistinguishable from a low-variability bot.
-# Such windows carry no evidence of automation, so they are dropped from
-# training and can never raise a flag - we abstain rather than accuse.
-MIN_WINDOW_EVENTS = 5
+# A window needs at least this many events for its shape features to be
+# meaningful: with <3 events every interval CV is 0 and the step features need
+# >=2 moves, so a near-empty minute collapses to an all-zeros row that looks like
+# a low-variability bot. Such windows are dropped - we abstain rather than accuse.
+MIN_WINDOW_EVENTS = 5    # tune: min events for a window to be scored
 
-# Refuse to train/evaluate on too little data to be meaningful.
-MIN_ROWS = 30
+MIN_ROWS = 30            # tune: refuse to train/evaluate below this many labeled windows
 
-# Demo/test-injected bot users must NOT count as human ground truth when
-# training (they are automation we deliberately fed through Kafka). They
-# are still scored/flagged at inference; only the human training class
-# excludes them.
-HUMAN_EXCLUDE_USERS = frozenset({"bot-test"})
-
-# Synthetic jiggler/keep-awake demo days seeded into output/events under a real
-# user for the dashboard demo. Like HUMAN_EXCLUDE_USERS they must NOT count as
-# human training truth, but they ARE still scored/flagged at inference. Keyed by
-# local calendar day (YYYY-MM-DD), matching _local_day and the batch.
-HUMAN_EXCLUDE_DAYS = frozenset({"2026-05-11", "2026-05-13", "2026-05-15"})
+# Demo/test bot users and seeded demo days are automation we deliberately fed in,
+# so they must NOT count as human ground truth when training. They ARE still
+# scored/flagged at inference; only the human training class excludes them.
+HUMAN_EXCLUDE_USERS = frozenset({"bot-test"})  # tune: users excluded from the human class
+HUMAN_EXCLUDE_DAYS = frozenset({              # tune: seeded demo days excluded from the human class
+    "2026-05-11", "2026-05-13", "2026-05-15"
+})
 
 
 # --------------------------------------------------------------------------
 # Feature engineering (shared by training and scoring -> no feature skew)
 # --------------------------------------------------------------------------
-
 def _prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize a raw-event frame (real archive or synthetic) to the
-    columns the featurizer needs, deriving ``event_time`` from ``ts`` when
-    absent (synthetic events carry only epoch ``ts``).
+    """Normalize a raw-event frame (real or synthetic) to the columns the
+    featurizer needs, deriving event_time from epoch ts when absent.
     """
     df = df.copy()
     if "event_time" not in df.columns:
@@ -127,9 +114,8 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cv(times: np.ndarray) -> float:
-    """Coefficient of variation (std/mean) of the gaps between sorted
-    timestamps. 0.0 when there are too few events to form >= 2 gaps.
-    Low CV = robotic regular cadence; high CV = human burstiness.
+    """Coefficient of variation (std/mean) of the gaps between sorted timestamps.
+    0.0 with too few events to form >=2 gaps. Low CV = robotic; high CV = human.
     """
     if times.size < 3:
         return 0.0
@@ -177,9 +163,8 @@ def _one_window(user, window_start, g: pd.DataFrame) -> dict:
 
 
 def _window_features(df: pd.DataFrame) -> pd.DataFrame:
-    """One row of FEATURES per (user, one-minute window), excluding near-empty
-    windows (< MIN_WINDOW_EVENTS events) whose shape features are degenerate
-    and carry no evidence either way.
+    """One row of FEATURES per (user, one-minute window), dropping near-empty
+    windows (< MIN_WINDOW_EVENTS) whose shape features are degenerate.
     """
     df = _prepare(df).dropna(subset=["event_time"]).sort_values(
         ["user", "event_time"]
@@ -197,9 +182,8 @@ def _window_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_events() -> pd.DataFrame:
-    """Read the full raw event archive. pandas/pyarrow reads the whole
-    directory directly (ignoring Spark's _spark_metadata); a glob is the
-    fallback if a bare-directory read ever errors.
+    """Read the full raw event archive (pandas/pyarrow reads the directory
+    directly, ignoring Spark's _spark_metadata; a glob is the fallback).
     """
     if not Path(EVENTS_PATH).exists():
         raise FileNotFoundError(
@@ -218,11 +202,10 @@ def _load_events() -> pd.DataFrame:
 
 
 def _labeled_dataset() -> pd.DataFrame:
-    """Human windows (label 0) from the real archive + non-human windows
-    (label 1) from synthetic bot events, both via ``_window_features``.
-
-    Demo/test-injected bot users are excluded from the human class so a
-    live demo never poisons the ground truth (they are bots, not humans).
+    """Human windows (label 0) from the real archive + non-human windows (label 1)
+    from synthetic bot events, both via _window_features. Demo/test bot users and
+    seeded demo days are excluded from the human class so a live demo never
+    poisons the ground truth.
     """
     events = _load_events()
     events = events[~events["user"].isin(HUMAN_EXCLUDE_USERS)]
@@ -237,10 +220,13 @@ def _labeled_dataset() -> pd.DataFrame:
     return pd.concat([human, synth], ignore_index=True)
 
 
+# --------------------------------------------------------------------------
+# Model
+# --------------------------------------------------------------------------
 def _make_model() -> RandomForestClassifier:
     return RandomForestClassifier(
-        n_estimators=300,
-        min_samples_leaf=2,
+        n_estimators=300,         # tune: number of trees
+        min_samples_leaf=2,       # tune: min samples per leaf (higher = more regularized)
         class_weight="balanced",
         random_state=42,
         n_jobs=-1,
@@ -250,7 +236,6 @@ def _make_model() -> RandomForestClassifier:
 # --------------------------------------------------------------------------
 # Train / evaluate
 # --------------------------------------------------------------------------
-
 @dataclass
 class EvalReport:
     task: str
@@ -264,8 +249,8 @@ class EvalReport:
 
 
 def train() -> dict:
-    """Fit the classifier on all available windows and persist it. Honest
-    metrics come from ``evaluate`` (which fits only on the training split).
+    """Fit the classifier on all available windows and persist it. Honest metrics
+    come from evaluate() (which fits only on the training split).
     """
     df = _labeled_dataset()
     if len(df) < MIN_ROWS:
@@ -288,13 +273,14 @@ def train() -> dict:
 
 
 def evaluate() -> EvalReport:
-    """Stratified hold-out evaluation. Reports accuracy, precision, recall,
-    F1, and ROC-AUC for the non-human class and writes metrics.json.
+    """Stratified hold-out evaluation: accuracy, precision, recall, F1, ROC-AUC
+    for the non-human class; writes metrics.json.
     """
     df = _labeled_dataset()
     if len(df) < MIN_ROWS:
         raise ValueError(f"need at least {MIN_ROWS} labeled windows (got {len(df)}).")
     X, y = df[FEATURES], df["label"]
+    # tune: test_size = hold-out fraction (0.25 = a 75/25 split).
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.25, stratify=y, random_state=42
     )
@@ -330,15 +316,11 @@ def evaluate() -> EvalReport:
 
 
 # --------------------------------------------------------------------------
-# Scoring / inference (real-time layer feeds output/liveness.parquet)
+# Scoring / inference (feeds output/liveness.parquet for the dashboard calendar)
 # --------------------------------------------------------------------------
-
 def _score_windows() -> pd.DataFrame:
-    """Per-window substrate: one row per (user, window_start) with the
-    model's non-human probability. Empty if no model or no events.
-
-    (A future per-session pass would left-join this onto
-    output/per_window on (user, window_start) for Spark's session_id.)
+    """One row per (user, window_start) with the model's non-human probability.
+    Empty if no model or no events.
     """
     if not MODEL_PATH.exists():
         log.info("no model at %s; run `train` first", MODEL_PATH)
@@ -353,8 +335,7 @@ def _score_windows() -> pd.DataFrame:
 
 def _local_day(window_start: pd.Series) -> pd.Series:
     """Map UTC window-start timestamps to host-local calendar-day keys
-    (YYYY-MM-DD), matching the browser's localDayKey and the batch job's
-    day_minute_metrics derivation.
+    (YYYY-MM-DD), matching the browser's localDayKey and the batch job.
     """
     local_tz = datetime.now(timezone.utc).astimezone().tzinfo
     return (
@@ -366,10 +347,9 @@ def _local_day(window_start: pd.Series) -> pd.Series:
 
 
 def score_days() -> pd.DataFrame:
-    """Aggregate per-window scores to a per-(user, day) non-human flag.
-    A day is flagged when at least MIN_FLAG_WINDOWS of its windows score
-    >= WINDOW_THRESHOLD - a sustained automated burst, not one odd minute.
-    Returns columns [user, day, nonhuman, score].
+    """Aggregate per-window scores to a per-(user, day) flag: a day is flagged
+    when >= MIN_FLAG_WINDOWS of its windows score >= WINDOW_THRESHOLD. Returns
+    columns [user, day, nonhuman, score].
     """
     windows = _score_windows()
     if windows.empty:
@@ -387,8 +367,8 @@ def score_days() -> pd.DataFrame:
 
 
 def write_liveness() -> int:
-    """Score and write output/liveness.parquet. Returns the row count.
-    Called by the API's batch scheduler after each compute_all.
+    """Score and write output/liveness.parquet. Returns the row count. Called by
+    the API's batch scheduler after each compute_all.
     """
     days = score_days()
     days.to_parquet(LIVENESS_PATH, index=False)
@@ -396,6 +376,9 @@ def write_liveness() -> int:
     return len(days)
 
 
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
 def _format_report(r: EvalReport) -> str:
     lines = [
         f"task:    {r.task}",

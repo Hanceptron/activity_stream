@@ -21,26 +21,31 @@ Run twice (or use `latexmk`) so `bibtex` resolves the references.
 
 ## Status - what's drafted vs. to-do
 
-Drafted now (stable): Introduction/Problem, System Architecture (the core),
-Dataset structure, Results structure with the measured throughput/latency.
+Drafted now (stable): Introduction/Problem, Related Work, System Architecture
+(the core, incl. the liveness model), Dataset, and Results (throughput/latency
+plus the liveness classification metrics). The earlier fatigue index and
+next-minute forecaster have been removed in favor of the liveness classifier.
 
 Search the source for these tags before submission:
 
-- `% TODO(data-freeze)` - final numbers, filled ~1–2 days before the demo:
+- `% TODO(data-freeze)` - final numbers, filled ~1-2 days before the demo:
   - final event count + collection span (Abstract, §Dataset)
-  - final ML RMSE/MAE/R² from `uv run python -m keyspark.ml evaluate`
-    (Abstract, Table II)
+  - final liveness accuracy/precision/recall/F1/ROC-AUC from
+    `uv run python -m keyspark.ml evaluate` (Abstract, Table II)
   - re-run `uv run python -m keyspark.benchmark batch|streaming` and
     refresh Table I
 - `% TODO(figure)` - screenshots/plots to add to `figures/`:
-  - dashboard (live metrics + time series)
-  - Spark UI → Structured Streaming tab (input/process rate)
-  - predicted-vs-actual next-minute keystrokes (matplotlib)
-  - optional: keystrokes-per-window histogram, feature-importance bar
-- `% TODO(citations)` - Related Work needs 3–5 verified domain references
-  (keystroke dynamics, fatigue/cognitive-load from input behavior, prior
-  streaming productivity-monitoring systems).
-- `% TODO(authors)` - group member names + institution in the title block.
+  - dashboard (live metrics + time series), incl. the history calendar with
+    a flagged (red) automation day, and the ML metrics card
+  - Spark UI -> Structured Streaming tab (input/process rate)
+  - optional: keystrokes-per-window histogram, liveness feature-importance bar
+- `% TODO(citations)` - DONE: verified automation-detection references added
+  (BeCAPTCHA-Mouse, Human/Bot/Cyborg, Battle of Botcraft) alongside the
+  keystroke-dynamics and streaming-systems cites. Spot-check all DOIs live
+  before submission.
+- `% TODO(authors)` - author + institution are set (Murat Emirhan Aykut,
+  Bahcesehir University); only the optional contact email is still tagged
+  in the title block.
 
 ## Citations / integrity
 

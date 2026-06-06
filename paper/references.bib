@@ -8,6 +8,12 @@
 % where independently confirmed; entries without pages are intentional.
 % Kafka and the Spark/RDD paper have no resolving DOI (workshop/USENIX) --
 % the stable URL is given instead; do not add a fabricated DOI.
+%
+% Added 2026-06 for the input-automation reframe: the bot-detection entries
+% (acien2022becaptcha, chu2012cyborg, gianvecchio2009botcraft) had their DOIs
+% confirmed via Crossref/DBLP/publisher; the two software-source @misc entries
+% (mousejiggler, powertoysawake) ground the synthetic non-human class and give a
+% stable URL only, like the Kafka/RDD entries. Spot-check all live before submission.
 % ===========================================================================
 
 % --- Stream-processing foundations ---------------------------------------
@@ -145,6 +151,45 @@
   doi     = {10.2196/41003}
 }
 
+% --- Detecting input automation / bots -----------------------------------
+
+@inproceedings{gianvecchio2009botcraft,
+  author    = {Gianvecchio, Steven and Wu, Zhenyu and Xie, Mengjun and
+               Wang, Haining},
+  title     = {Battle of {Botcraft}: Fighting Bots in Online Games with
+               Human Observational Proofs},
+  booktitle = {Proc. 16th ACM Conf. on Computer and Communications
+               Security (CCS)},
+  pages     = {256--268},
+  year      = {2009},
+  doi       = {10.1145/1653662.1653694}
+}
+
+@article{chu2012cyborg,
+  author  = {Chu, Zi and Gianvecchio, Steven and Wang, Haining and
+             Jajodia, Sushil},
+  title   = {Detecting Automation of {Twitter} Accounts: Are You a Human,
+             Bot, or Cyborg?},
+  journal = {IEEE Transactions on Dependable and Secure Computing},
+  volume  = {9},
+  number  = {6},
+  pages   = {811--824},
+  year    = {2012},
+  doi     = {10.1109/TDSC.2012.75}
+}
+
+@article{acien2022becaptcha,
+  author  = {Acien, Alejandro and Morales, Aythami and Fierrez, Julian and
+             Vera-Rodriguez, Ruben},
+  title   = {{BeCAPTCHA-Mouse}: Synthetic Mouse Trajectories and Improved
+             Bot Detection},
+  journal = {Pattern Recognition},
+  volume  = {127},
+  pages   = {108643},
+  year    = {2022},
+  doi     = {10.1016/j.patcog.2022.108643}
+}
+
 % --- Machine-learning method ---------------------------------------------
 
 @article{breiman2001random,
@@ -170,4 +215,23 @@
   volume  = {12},
   pages   = {2825--2830},
   year    = {2011}
+}
+
+% --- Primary sources: real keep-active tools (ground the synthetic class) -
+% Software sources, URL only (same house style as the Kafka/RDD entries).
+
+@misc{mousejiggler,
+  author = {{Arkane Systems}},
+  title  = {Mouse Jiggler},
+  year   = {2026},
+  note   = {Open-source mouse jiggler; fixed relative JigglePatterns geometry. Accessed 2026-06},
+  url    = {https://github.com/arkane-systems/mousejiggler}
+}
+
+@misc{powertoysawake,
+  author = {{Microsoft}},
+  title  = {{PowerToys} Awake},
+  year   = {2026},
+  note   = {No-input idle-suppressor using an OS power assertion. Accessed 2026-06},
+  url    = {https://github.com/microsoft/PowerToys}
 }

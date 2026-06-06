@@ -1,38 +1,25 @@
-"""Synthetic input-automation (bot) event generator for KeySpark.
-
-Emits raw input events in the same JSON shape the capture agent produces
-(see ``keyspark/agent.py``), for two uses:
-
-  1. Training the liveness classifier (the non-human class). The same
-     events are featurized by ``keyspark.ml`` exactly the way real
-     events are, so there is no train/serve feature skew.
-  2. A live demo: inject events straight into the Kafka topic
-     ``events.raw``. macOS drops software-injected HID events, so a
-     software bot never reaches the capture agent - going straight to
-     Kafka is the demo path.
+"""Synthetic input-automation (bot) event generator: the non-human class for the
+liveness classifier, plus a live-demo injector. Emits raw events in the same JSON
+shape the capture agent produces, so keyspark.ml featurizes them exactly like
+real events (no train/serve skew).
 
 Four bot kinds, each robotic in one modality:
-  - jiggler    : small mouse nudge tracing a fixed pattern (diagonal /
-                 horizontal / octagon) in place, no keys
+  - jiggler    : small mouse nudge tracing a FIXED pattern (diagonal / horizontal
+                 / octagon) in place, no keys
   - typer      : keystrokes over a small key set, no mouse
-  - keep_awake : one function key (F15 / Scroll Lock) repeated on a regular
-                 keep-awake cadence, no mouse
+  - keep_awake : one function key (F15 / Scroll Lock) on a slow cadence, no mouse
   - clicker    : repeated clicks at one spot
 
-The jiggler geometry and the keep_awake key are grounded in how real
-keep-active products actually behave (see research/jigglers.md): verified
-open-source movers like arkane-systems Mouse Jiggler trace a FIXED relative
-pattern and never randomize the path, and keyboard keep-awake tools like
-Caffeine emit a single non-character key. The one thing those tools do
-randomize is timing.
+Grounded in how real keep-active tools behave (research/jigglers.md): verified
+open-source movers (arkane-systems Mouse Jiggler) trace a fixed relative pattern
+and never randomize the path; keyboard keep-awake tools (Caffeine) emit a single
+non-character key. The one thing they randomize is timing. So we keep the TIMING
+jittered (per-session cadence, jitter, occasional pauses) plus a little
+cross-modal contamination, so the task is not a trivial if-statement; the signal
+left to learn is the residual GEOMETRY regularity (low step_cv, low key_diversity).
 
-So, to keep the ML task honest (not a trivially separable if-statement), we
-keep the TIMING deliberately jittered (per-session randomized cadence, timing
-jitter, occasional pauses) plus a little cross-modal contamination, so the
-classifier cannot just threshold the clock or the input mix. The signal it
-learns is the residual GEOMETRY regularity: a rigid, near-constant mouse step
-(low step_cv) and a single repeated key (low key_diversity) - the same tell
-that makes these tools detectable in the real world.
+macOS drops software-injected HID events, so a software bot never reaches the
+capture agent - the demo path injects straight into Kafka instead.
 
   uv run python -m keyspark.botgen demo --kind jiggler --duration 60
 """
@@ -44,39 +31,34 @@ import json
 import random
 import time
 
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
 KINDS = ("jiggler", "typer", "keep_awake", "clicker")
 DEFAULT_USER = "user-001"
-KAFKA_BOOTSTRAP = "localhost:9092"
+KAFKA_BOOTSTRAP = "localhost:9092"   # tune: Kafka broker for the demo injector
 KAFKA_TOPIC = "events.raw"
 EVENTS_PATH = "output/events"
 
-# Per-session base inter-event interval (seconds) is drawn from this range
-# so different synthetic sessions have different cadences. The jiggler and
-# keep_awake bands are slow on purpose: real movers nudge every few seconds,
-# not sub-second (research/jigglers.md). They stay fast enough that a one-minute
-# window still holds several events - very slow 30-60s movers produce near-empty
-# windows that carry little per-window signal.
-_BASE_RANGE = {
+# Per-session base inter-event interval (s) per kind, so different sessions have
+# different cadences. The jiggler/keep_awake bands are slow on purpose (real
+# movers nudge every few seconds, not sub-second), but fast enough that a
+# one-minute window still holds several events.
+_BASE_RANGE = {                      # tune: cadence band (s) per bot kind
     "jiggler": (1.0, 8.0),
     "typer": (0.10, 0.40),
     "keep_awake": (6.0, 12.0),
     "clicker": (0.3, 1.5),
 }
-# Timing jitter fraction drawn per session (events land at base*(1 +/- j)).
-_JITTER_RANGE = (0.20, 0.50)
-# Fraction of events that are an off-kind action, so mouse_fraction and key
-# diversity are blurred rather than perfectly 1.0 / 0.0.
-CONTAMINATION = 0.08
+_JITTER_RANGE = (0.20, 0.50)         # tune: per-session timing jitter fraction
+CONTAMINATION = 0.08                 # tune: fraction of off-kind events (blurs mouse_fraction / diversity)
 _ANCHOR = (800, 500)
 _TYPER_KEYS = ("a", "s", "d", "f", "j", "k", "l", "e")  # small, low-diversity set
 
-# Deterministic relative mouse-move patterns, mirroring the fixed (dx, dy) px
-# deltas real open-source jigglers step through (arkane-systems Mouse Jiggler's
-# JigglePatterns). The pointer walks these in order, in place: back-and-forth
-# pairs and a closed octagon, so the step size is near-constant (low step_cv) -
-# the real robotic tell. A per-session multiplier scales the deltas (the tool's
-# configurable "distance"), so step_mean varies across sessions but stays rigid
-# within one.
+# Deterministic relative mouse-move patterns, mirroring arkane-systems Mouse
+# Jiggler's JigglePatterns: back-and-forth pairs and a closed octagon, walked in
+# order in place, so step size is near-constant (low step_cv). A per-session
+# multiplier scales the deltas (the tool's configurable "distance").
 _MOVE_PATTERNS = {
     "normal": ((4, 4), (-4, -4)),                     # diagonal nudge
     "linear": ((4, 0), (-4, 0)),                      # horizontal nudge
@@ -84,17 +66,18 @@ _MOVE_PATTERNS = {
                (-3, -2), (-2, -3), (2, -3), (3, -2)),  # closed octagon
 }
 _JIGGLE_PATTERNS = ("normal", "linear", "circle")
-# Single non-character keys keep-awake tools press (F15 is the classic Caffeine
-# key; Scroll Lock toggling is also common). One key per session keeps
-# key_diversity low - the keyboard analogue of the rigid mouse pattern.
+# Single non-character keep-awake keys (F15 is the classic Caffeine key). One key
+# per session keeps key_diversity low - the keyboard analogue of the rigid mouse pattern.
 _KEEPAWAKE_KEYS = ("f15", "f13", "f14", "scroll_lock")
 
 
+# --------------------------------------------------------------------------
+# Event generation
+# --------------------------------------------------------------------------
 def _next_event(kind: str, state: dict, user: str, ts: float, rng: random.Random) -> dict:
     """One event for bot ``kind`` at time ``ts``. ``state`` carries the mouse
-    position plus the per-session jiggle pattern / keep-awake key, so the
-    jiggler traces a fixed pattern in place (rigid, near-constant step).
-    Occasionally emits an off-kind action (CONTAMINATION).
+    position plus the per-session jiggle pattern / keep-awake key, so the jiggler
+    traces a fixed pattern in place. Occasionally emits an off-kind action.
     """
     kk = kind
     if rng.random() < CONTAMINATION:
@@ -122,8 +105,8 @@ def _next_event(kind: str, state: dict, user: str, ts: float, rng: random.Random
 def synthetic_events(kind: str, count: int, user: str = DEFAULT_USER,
                      start_ts: float = 0.0, seed: int = 0,
                      base: float | None = None, jitter: float = 0.35) -> list[dict]:
-    """``count`` event dicts for one bot ``kind`` starting at ``start_ts``
-    (epoch seconds), advancing by ``base`` seconds with +/- ``jitter``.
+    """``count`` event dicts for one bot ``kind`` starting at ``start_ts`` (epoch
+    seconds), advancing by ``base`` seconds with +/- ``jitter``.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown bot kind {kind!r}; choose from {KINDS}")
@@ -131,9 +114,8 @@ def synthetic_events(kind: str, count: int, user: str = DEFAULT_USER,
     if base is None:
         base = sum(_BASE_RANGE[kind]) / 2
     ts = float(start_ts)
-    # Per-session choices: which fixed jiggle pattern, its distance multiplier,
-    # and which single keep-awake key. Fixed for the whole session, so geometry
-    # stays rigid within it but varies across sessions.
+    # Per-session choices (fixed for the whole session, varied across sessions):
+    # the jiggle pattern, its distance multiplier, and the single keep-awake key.
     state = {"x": _ANCHOR[0], "y": _ANCHOR[1], "i": 0,
              "pattern": rng.choice(_JIGGLE_PATTERNS),
              "dist": rng.randint(1, 3),
@@ -151,10 +133,9 @@ def synthetic_events(kind: str, count: int, user: str = DEFAULT_USER,
 def synthetic_event_frame(sessions_per_kind: int = 4, minutes_per_session: int = 30,
                           user: str = DEFAULT_USER, start_ts: float = 1.0e9,
                           seed: int = 0):
-    """A pandas DataFrame of synthetic bot events: ``sessions_per_kind``
-    sessions for each bot kind, each ~``minutes_per_session`` minutes, with
-    per-session randomized cadence, jitter, jiggle pattern, and keep-awake key
-    so the non-human class spans a range of the feature space (not one point).
+    """A DataFrame of synthetic bot events: ``sessions_per_kind`` sessions for each
+    kind, each ~``minutes_per_session`` minutes, with per-session randomized
+    cadence/jitter/pattern/key so the non-human class spans the feature space.
     """
     import pandas as pd
 
@@ -175,13 +156,15 @@ def synthetic_event_frame(sessions_per_kind: int = 4, minutes_per_session: int =
     return pd.DataFrame(rows)
 
 
+# --------------------------------------------------------------------------
+# Parquet I/O (seed conforming files into output/events/)
+# --------------------------------------------------------------------------
 def events_arrow_schema():
-    """The exact on-disk schema of the streaming event archive
-    (output/events/), matching streaming_job.py's ``parsed`` projection.
-    x/y/dx/dy are int64 (Spark LongType, nullable): keyboard events have
-    null coords, and the batch reader in keyspark.batch_job requires int64
-    here. A plain pandas ``to_parquet`` would write them as float64/double
-    and make Spark raise PARQUET_COLUMN_DATA_TYPE_MISMATCH.
+    """The exact on-disk schema of the streaming event archive (output/events/),
+    matching streaming_job.py's parsed projection. x/y/dx/dy are int64 (Spark
+    LongType, nullable): keyboard events have null coords, and the batch reader
+    requires int64 here - a plain pandas to_parquet would write float64/double and
+    make Spark raise PARQUET_COLUMN_DATA_TYPE_MISMATCH.
     """
     import pyarrow as pa
 
@@ -201,15 +184,10 @@ def events_arrow_schema():
 
 
 def write_events_parquet(events, path: str) -> int:
-    """Write synthetic ``events`` (a list of event dicts or a DataFrame) to
-    ``path`` as parquet with the exact streaming-sink schema, so the batch
-    read in keyspark.batch_job accepts them like real captured events.
-
-    This is the supported way to seed output/events/ directly (e.g. a
-    backdated demo "bot" day): it derives ``event_time`` from ``ts`` and
-    coerces every column - crucially x/y/dx/dy to nullable int64 - so a
-    frame with null mouse coords does not default to float64/double and
-    crash the batch. Returns the row count.
+    """Write synthetic ``events`` (list of dicts or DataFrame) to ``path`` with the
+    exact streaming-sink schema, so the batch read accepts them like real events.
+    Coerces every column (crucially x/y/dx/dy to nullable int64) and writes
+    event_time as INT96. Returns the row count.
     """
     import pandas as pd
     import pyarrow as pa
@@ -223,25 +201,25 @@ def write_events_parquet(events, path: str) -> int:
     arrays = []
     for field in schema:
         col = df[field.name] if field.name in df.columns else [None] * len(df)
-        # from_pandas=True maps NaN/None to null, so missing optional columns
-        # (e.g. key on a mouse event, or dx/dy when there is no scroll) and
-        # null coords become typed nulls rather than floats.
+        # from_pandas=True maps NaN/None to typed null, so missing optional columns
+        # (key on a mouse event, dx/dy when no scroll) and null coords become typed
+        # nulls rather than floats.
         arrays.append(pa.array(col, type=field.type, from_pandas=True))
-    # Write event_time as INT96 to match the Spark streaming sink. Spark's
-    # vectorized Parquet reader cannot read INT64-nanosecond timestamps (a plain
-    # pyarrow write of a timestamp("ns") column), and the batch
-    # ``spark.read.parquet`` would raise PARQUET_COLUMN_DATA_TYPE_MISMATCH on it.
-    # INT96 is exactly what Spark itself writes, so a seeded file reads back the
-    # same way as a captured one.
+    # INT96 timestamps: Spark's vectorized reader cannot read INT64-nanosecond
+    # timestamps (a plain pyarrow timestamp("ns") write), and the batch read would
+    # raise PARQUET_COLUMN_DATA_TYPE_MISMATCH. INT96 is what Spark itself writes,
+    # so a seeded file reads back like a captured one.
     pq.write_table(pa.Table.from_arrays(arrays, schema=schema), path,
                    use_deprecated_int96_timestamps=True)
     return len(df)
 
 
+# --------------------------------------------------------------------------
+# Demo (inject to Kafka) + seed (write a backdated day)
+# --------------------------------------------------------------------------
 def _demo(kind: str, duration: float, rate: float, user: str) -> None:
-    """Inject ~``rate`` events/sec of bot ``kind`` for ``duration`` seconds
-    into Kafka, timestamped at wall-clock now so the streaming watermark
-    accepts them as current.
+    """Inject ~``rate`` events/sec of bot ``kind`` for ``duration`` seconds into
+    Kafka, timestamped at wall-clock now so the streaming watermark accepts them.
     """
     from confluent_kafka import Producer
 
@@ -262,11 +240,9 @@ def _demo(kind: str, duration: float, rate: float, user: str) -> None:
 
 
 def _seed(kind: str, day: str, user: str, minutes: float, seed: int) -> None:
-    """Write a conforming synthetic-event parquet file into output/events/
-    for one backdated calendar day, so the batch + liveness demo show a
-    flagged day without using the live Kafka path. The file matches the
-    streaming sink schema (see ``write_events_parquet``), so the batch picks
-    it up like real data instead of crashing on it.
+    """Write a conforming synthetic-event parquet file into output/events/ for one
+    backdated calendar day, so the batch + liveness demo show a flagged day without
+    using the live Kafka path.
     """
     import datetime as dt
     import os
@@ -283,6 +259,9 @@ def _seed(kind: str, day: str, user: str, minutes: float, seed: int) -> None:
     print(f"wrote {n} '{kind}' events for {user} on {day} -> {out}")
 
 
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(description="KeySpark synthetic bot event generator")
     sub = parser.add_subparsers(dest="cmd", required=True)

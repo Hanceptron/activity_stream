@@ -1,29 +1,28 @@
-"""Shared event-count aggregations.
-
-The per-window keystroke / word / correction / click counts must be
-computed identically everywhere they appear - the streaming job's live
-metrics, the batch job's session windows, and the batch job's per-day
-windows - or the live dashboard, the fatigue features, and the history
-drill-down would silently disagree. This module is the single source of
-truth for those four counts and the key sets behind them.
+"""Shared event-count aggregations: the single source of truth for the four
+per-window counts (keystrokes, words, corrections, clicks). Used by the
+streaming live metrics and by the batch session + per-day windows, so they can
+never silently disagree.
 """
 
 from pyspark.sql import Column
 from pyspark.sql import functions as F
 
-# pynput emits the literal " " for the space character and "Key.<name>"
-# reprs for special keys, so a space can arrive in either form. A
-# "correction" is a backspace or delete.
-WORD_KEYS = (" ", "Key.space")
-CORRECTION_KEYS = ("Key.backspace", "Key.delete")
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+# pynput emits " " for space and "Key.<name>" for special keys, so a space can
+# arrive in either form. A "correction" is a backspace or delete.
+WORD_KEYS = (" ", "Key.space")                     # tune: keys counted as a word boundary
+CORRECTION_KEYS = ("Key.backspace", "Key.delete")  # tune: keys counted as a correction
 
 
+# --------------------------------------------------------------------------
+# Aggregation expressions
+# --------------------------------------------------------------------------
 def event_count_exprs() -> list[Column]:
-    """The four per-window count aggregations, in a stable order.
-
-    Spread into a groupBy as ``.agg(*event_count_exprs())``. Requires the
-    grouped frame to carry the ``type`` and ``key`` columns from the
-    parsed event schema.
+    """The four per-window count aggregations, in a stable order. Spread into a
+    groupBy as ``.agg(*event_count_exprs())``; needs the ``type`` and ``key``
+    columns from the parsed event schema.
     """
     is_kd = F.col("type") == "key_down"
     return [

@@ -1,10 +1,9 @@
-"""KeySpark Spark batch job.
-
-Reads the raw event archive at output/events/, sessionizes activity,
-writes per-session summaries to output/sessions/, a per-user
-baseline to output/baseline/, and one spatial heatmap per preset
-time range under output/heatmaps/{1h,6h,1d,3d,1w}/. Overwrites its
-output directories each run.
+"""Spark batch job (the Lambda batch layer). Reads the raw event archive at
+output/events/, sessionizes activity, and writes: per-session summaries to
+output/sessions/, a per-user baseline to output/baseline/, a flattened
+per-window table to output/per_window/, per-day timelines + heatmaps for the
+calendar drill-down, and one spatial heatmap per preset range under
+output/heatmaps/{1h,6h,1d,3d,1w}/. Overwrites its output dirs each run.
 """
 
 import logging
@@ -18,6 +17,9 @@ from keyspark.aggregations import event_count_exprs
 
 log = logging.getLogger("keyspark.batch_job")
 
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
 EVENTS_PATH = "output/events"
 SESSIONS_PATH = "output/sessions"
 BASELINE_PATH = "output/baseline"
@@ -26,15 +28,13 @@ PER_WINDOW_PATH = "output/per_window"
 DAY_MINUTE_METRICS_PATH = "output/day_minute_metrics"
 HEATMAP_BY_DAY_PATH = "output/heatmap_by_day"
 
-WINDOW_SIZE = "1 minute"
-SESSION_GAP_SECONDS = 5 * 60
+WINDOW_SIZE = "1 minute"      # tune: per-window aggregation size
+SESSION_GAP_SECONDS = 5 * 60  # tune: idle gap (s) that starts a new session
 
-# Heatmap grid resolution in screen pixels per cell. Smaller = finer
-# grid = sharper heatmap. 16px gives a ~240-wide grid on a 4K display,
-# enough detail to avoid the blocky/low-res look while keeping the
-# cell count renderable.
-CELL_SIZE = 16
-HEATMAP_PRESETS = [
+# Heatmap grid resolution (screen px per cell). Smaller = finer/sharper but more
+# cells. 16px gives a ~240-wide grid on a 4K display.
+CELL_SIZE = 16                # tune: heatmap cell size in pixels
+HEATMAP_PRESETS = [           # tune: heatmap preset ranges, (name, hours)
     ("1h", 1),
     ("6h", 6),
     ("1d", 24),
@@ -43,27 +43,29 @@ HEATMAP_PRESETS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Spark session
+# --------------------------------------------------------------------------
 def build_session():
     return (
         SparkSession.builder
         .appName("keyspark-batch")
-        .master("local[*]")
-        .config("spark.sql.shuffle.partitions", "4")
+        .master("local[*]")                           # tune: Spark master
+        .config("spark.sql.shuffle.partitions", "4")  # tune: shuffle parallelism
         .getOrCreate()
     )
 
 
+# --------------------------------------------------------------------------
+# Event archive reader (schema guard)
+# --------------------------------------------------------------------------
 def _conforming_event_files():
-    """Event part files under output/events/ whose x/y/dx/dy are stored as
-    integers, matching the streaming sink (LongType).
-
-    A file with float/double coords - e.g. a pandas frame seeded with null
-    coords via a plain ``DataFrame.to_parquet`` - makes Spark's vectorized
-    reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and, before this guard,
-    crash-looped the whole batch (and with it the API). Such files are
-    skipped with a warning instead of taking everything down. Cheap: reads
-    only parquet footers, not column data. Seed synthetic data with
-    ``keyspark.botgen.write_events_parquet`` so it conforms and is included.
+    """Event part files under output/events/ whose x/y/dx/dy are int64 (matching
+    the streaming sink). A file with float/double coords (e.g. a pandas frame
+    seeded with null coords via a plain to_parquet) makes Spark's vectorized
+    reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and crash-loop the batch, so
+    it is skipped with a warning instead. Cheap: reads only parquet footers. Seed
+    synthetic data via keyspark.botgen.write_events_parquet so it conforms.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -94,16 +96,15 @@ def _conforming_event_files():
     return good
 
 
+# --------------------------------------------------------------------------
+# Sessionization + per-window metrics
+# --------------------------------------------------------------------------
 def per_window_metrics(events):
     """One row per (session_id, time_window, user) with the four count metrics."""
-
-    # Sessionize manually. Walking each user's events in event-time
-    # order, a new session starts whenever the gap from the previous
-    # event exceeds SESSION_GAP_SECONDS. The running cumulative sum
-    # of those "new session" flags is a stable integer session_id per
-    # event. We do this instead of Spark's session_window because it
-    # cannot share a groupBy with window() (per_window_metrics groups
-    # by the 1-minute time_window).
+    # Sessionize manually: walking each user's events in event-time order, a new
+    # session starts when the gap exceeds SESSION_GAP_SECONDS; the cumulative sum
+    # of those flags is a stable integer session_id. (session_window cannot share
+    # a groupBy with the 1-minute window() used below.)
     user_order = Window.partitionBy("user").orderBy("event_time")
     cumulative = user_order.rowsBetween(Window.unboundedPreceding, Window.currentRow)
     events_s = (
@@ -136,11 +137,8 @@ def per_window_metrics(events):
 
 
 def session_summary(per_window):
-    """One row per (session_id, user) with session totals.
-
-    Aggregates each session's per-minute windows into start/end, the
-    window count, and the four count totals. (The previous fatigue
-    trend index was removed.)
+    """One row per (session_id, user): session start/end, window count, and the
+    four count totals. (The earlier fatigue trend index was removed.)
     """
     return (
         per_window.groupBy("session_id", "user")
@@ -170,12 +168,13 @@ def user_baseline(per_window):
     )
 
 
+# --------------------------------------------------------------------------
+# Spatial heatmaps + per-day rollups
+# --------------------------------------------------------------------------
 def heatmap_for_range(events, hours, max_event_time):
-    """Spatial heatmap counts for the last `hours` hours of mouse events.
-
-    The cutoff is measured backwards from `max_event_time` (the
-    newest event in the archive), not from wall-clock now, so an
-    archive recorded days ago still produces a populated heatmap.
+    """Spatial heatmap counts for the last `hours` hours of mouse events. The
+    cutoff is measured back from max_event_time (the newest event), not wall-clock
+    now, so an archive recorded days ago still produces a populated heatmap.
     """
     cutoff = max_event_time - timedelta(hours=hours)
     return (
@@ -190,17 +189,11 @@ def heatmap_for_range(events, hours, max_event_time):
 
 
 def day_minute_metrics(events):
-    """One row per (day, one-minute window, user) with the four count
-    metrics plus a per-minute mouse-movement count (move + scroll), used
-    only by the daily-graph timeline. Same aggregation as
-    per_window_metrics but keyed by the calendar day instead of a session,
-    so the frontend can pull a single historical day's timeline. `day` is
-    the local calendar day (host timezone) via date_format, matching the
-    browser's localDayKey on a single-user machine.
-
-    mouse_moves is added here rather than in the shared event_count_exprs()
-    on purpose: that keeps the streaming job's output schema (and its
-    Structured Streaming checkpoint) untouched. Clicks stay a separate count.
+    """One row per (day, 1-minute window, user): the four counts plus a per-minute
+    mouse-movement count (move + scroll) for the daily-graph timeline. `day` is
+    the local calendar day via date_format, matching the browser's localDayKey on
+    a single-user machine. mouse_moves is added here (not in event_count_exprs)
+    so the streaming output schema and checkpoint stay untouched.
     """
     ev = (
         events
@@ -228,10 +221,8 @@ def day_minute_metrics(events):
 
 
 def heatmap_by_day(events):
-    """One row per (day, cell_x, cell_y, type, user) over the whole
-    archive. Same spatial bucketing as heatmap_for_range but with no
-    time cutoff and a `day` column, so the frontend can render the
-    movement + click heatmap for any single calendar day.
+    """One row per (day, cell_x, cell_y, type, user) over the whole archive (no
+    time cutoff), so the frontend can render any single day's move+click heatmap.
     """
     return (
         events
@@ -244,22 +235,16 @@ def heatmap_by_day(events):
     )
 
 
+# --------------------------------------------------------------------------
+# One batch pass
+# --------------------------------------------------------------------------
 def compute_all(spark):
-    """Run one batch pass over the event archive: read events,
-    compute per-session summaries, the per-user baseline, and a
-    spatial heatmap for each preset range. Overwrites the output
-    directories in place. Safe to call repeatedly on the same
-    long-lived spark session.
-
-    Called both from the CLI ``main()`` below and from the API's
-    in-process scheduler in ``api.py``. The ``unpersist()`` calls in
-    the ``finally`` blocks matter for the scheduled case - without
-    them, cached DataFrames pile up in Spark memory across runs.
-
-    Returns early with a warning when ``output/events/`` does not
-    exist yet (first run, or after ``rm -rf output/``). Without this
-    guard ``spark.read.parquet`` raises ``AnalysisException`` and the
-    scheduler tick fails with a misleading traceback every 5 min.
+    """Run one batch pass over the archive: read events, compute per-session
+    summaries, the per-user baseline, the flattened per-window table, per-day
+    rollups, and a heatmap per preset range, overwriting the output dirs. Safe to
+    call repeatedly on a long-lived session (the unpersist() calls matter for the
+    scheduled case). Returns early with a warning when output/events/ is missing
+    or has no conforming files.
     """
     if not Path(EVENTS_PATH).exists():
         log.warning(
@@ -268,17 +253,12 @@ def compute_all(spark):
         )
         return
 
-    # Read the part files directly (explicit file list) instead of the
-    # directory root. Reading the root makes Spark honor the Structured
-    # Streaming commit log (output/events/_spark_metadata), which only
-    # references files written since the last streaming checkpoint reset -
-    # so a reset (Kafka offset change, etc.) silently orphans every earlier
-    # part file and the batch loses weeks of history. Listing files always
-    # reads the whole archive. _conforming_event_files() additionally drops
-    # any file whose x/y/dx/dy are not int64, which would otherwise make the
-    # vectorized reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and crash
-    # every batch. (Trade-off: it lists + footer-reads every part file each
-    # run; if the file count grows large, add a trigger + periodic compaction.)
+    # Read the part files directly (explicit list), not the directory root:
+    # reading the root makes Spark honor output/events/_spark_metadata, which only
+    # references files written since the last checkpoint reset - so a reset
+    # silently orphans every earlier part file and loses history. Listing files
+    # always reads the whole archive; _conforming_event_files() also drops any
+    # file whose x/y/dx/dy are not int64 (would crash the vectorized reader).
     event_files = _conforming_event_files()
     if not event_files:
         log.warning(
@@ -293,10 +273,9 @@ def compute_all(spark):
             session_summary(per_window).write.mode("overwrite").parquet(SESSIONS_PATH)
             user_baseline(per_window).write.mode("overwrite").parquet(BASELINE_PATH)
 
-            # Flatten the time_window struct so the ML pipeline can read
-            # this dataset with vanilla pandas - it would otherwise need
-            # to know the struct schema. Written every batch so the
-            # training set always reflects the latest sessionization.
+            # Flatten the time_window struct so the ML pipeline can read this with
+            # plain pandas. Rewritten every batch so training reflects the latest
+            # sessionization.
             (
                 per_window
                 .select(
@@ -313,10 +292,7 @@ def compute_all(spark):
                 .parquet(PER_WINDOW_PATH)
             )
 
-            # Per-day keystroke timeline and per-day spatial heatmap,
-            # both for the calendar drill-down. Single clean parquet
-            # dirs (unlike the raw event archive) so the pandas reader
-            # in the API reads them without hitting empty-file errors.
+            # Per-day keystroke timeline + per-day spatial heatmap (calendar drill-down).
             (
                 day_minute_metrics(events)
                 .write.mode("overwrite")

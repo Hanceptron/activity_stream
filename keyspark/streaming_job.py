@@ -1,16 +1,12 @@
-"""KeySpark Spark Structured Streaming job.
+"""Spark Structured Streaming job (the Lambda speed layer). Two queries share one
+parsed Kafka stream: Query A aggregates per-(user, 1-minute) counts to
+output/metrics/ in append mode; Query B archives the parsed events to
+output/events/ for the batch job and the liveness model. The spatial heatmap is
+computed in the batch job so it can be filtered to user-selected ranges.
 
-Two streaming queries share one parsed Kafka stream. Query A
-aggregates per-(user, one-minute window) event counts (keystrokes,
-words, corrections, clicks) to output/metrics/ in append mode.
-Query B archives the parsed events to output/events/ for the batch
-job to read. The spatial heatmap is computed in the batch job (see
-batch_job.py) so it can be filtered to user-selected time ranges.
-
-Migration note when changing the metrics schema: Spark Structured
-Streaming will refuse to recover from output/checkpoint/metrics
-when the output column set changes. Delete that directory before
-restart. The events checkpoint is unaffected.
+Schema-change note: Structured Streaming refuses to recover
+output/checkpoint/metrics when the metrics column set changes - delete that dir
+before restart. The events checkpoint is unaffected.
 """
 
 import logging
@@ -34,11 +30,14 @@ from keyspark.aggregations import event_count_exprs
 
 log = logging.getLogger("keyspark.streaming_job")
 
-KAFKA_BOOTSTRAP = "localhost:9092"
-KAFKA_TOPIC = "events.raw"
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+KAFKA_BOOTSTRAP = "localhost:9092"   # tune: Kafka broker address
+KAFKA_TOPIC = "events.raw"           # tune: source topic
 
-# Must match the installed pyspark version exactly. pyspark 4.1.1 is
-# built against Scala 2.13, so the connector artifact is _2.13.
+# Kafka connector artifact. Must match the installed pyspark/Scala build exactly
+# (pyspark 4.1.1 is Scala 2.13, hence the _2.13 suffix).
 KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
 
 METRICS_PATH = "output/metrics"
@@ -46,32 +45,30 @@ EVENTS_PATH = "output/events"
 METRICS_CHECKPOINT = "output/checkpoint/metrics"
 EVENTS_CHECKPOINT = "output/checkpoint/events"
 
-# 5-second watermark balances late-event tolerance against time-to-first-window-emit.
-# Events flow over localhost from a process whose clock is sub-millisecond aligned
-# with the streaming JVM's, so 5 s is generous. The trade-off matters for the
-# live-dot smoke test: a 1-minute window with append-mode + N-second watermark
-# cannot emit a window before window_size+N seconds of wall-clock have elapsed
-# since the first event. With WATERMARK=30 s, that was ~90 s, which (a) put the
-# dot through a flicker cycle each minute under sustained typing and (b) made
-# cold-start-to-green and wake-to-green slower than the README's 2-minute
-# smoke-test threshold. Header.jsx now ages off window_end, so dropping the
-# watermark also leaves more headroom inside the 2-minute "live" window.
-WATERMARK = "5 seconds"
-WINDOW_DURATION = "1 minute"
+# 5s watermark balances late-event tolerance against time-to-first-window.
+# Append + watermark means a window cannot emit until window+watermark of
+# wall-clock has elapsed since its first event; larger values (we tried 30s)
+# pushed that to ~90s and made the live dashboard dot flicker and recover slowly.
+WATERMARK = "5 seconds"        # tune: how long to wait for late/out-of-order events
+WINDOW_DURATION = "1 minute"   # tune: metric window size (also sets the min end-to-end latency)
 
 
+# --------------------------------------------------------------------------
+# Spark session + event schema
+# --------------------------------------------------------------------------
 def build_session():
     return (
         SparkSession.builder
         .appName("keyspark")
-        .master("local[*]")
+        .master("local[*]")                           # tune: Spark master (local[*] = all cores)
         .config("spark.jars.packages", KAFKA_PACKAGE)
-        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.sql.shuffle.partitions", "4")  # tune: shuffle parallelism
         .getOrCreate()
     )
 
 
 def event_schema():
+    # Explicit schema (no inference): predictable and cheap.
     return (
         StructType()
         .add("type", StringType())
@@ -87,6 +84,9 @@ def event_schema():
     )
 
 
+# --------------------------------------------------------------------------
+# Pipeline
+# --------------------------------------------------------------------------
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -95,21 +95,22 @@ def main():
     spark = build_session()
     spark.sparkContext.setLogLevel("WARN")
 
+    # ----- Read from Kafka -----
     raw = (
         spark.readStream
         .format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe", KAFKA_TOPIC)
         .option("startingOffsets", "latest")
-        # Survive a wiped/recreated Kafka (e.g. host sleep-wake): when the
-        # checkpoint's offset is past what the broker still has, reset to
-        # the earliest available offset and continue instead of crashing
-        # forever with "Some data may have been lost". Input events are
-        # cheap to lose; a permanent crash loop is not.
+        # failOnDataLoss=false: if a host sleep/wake left the checkpoint's offset
+        # past what the broker still has, reset to the earliest available offset
+        # and continue instead of crash-looping forever. Losing input events is
+        # cheap; a permanent crash loop is not.
         .option("failOnDataLoss", "false")
         .load()
     )
 
+    # ----- Parse JSON value + attach event-time watermark -----
     parsed = (
         raw.selectExpr("CAST(value AS STRING) AS json")
         .select(from_json(col("json"), event_schema()).alias("e"))
@@ -118,6 +119,7 @@ def main():
         .withWatermark("event_time", WATERMARK)
     )
 
+    # ----- Query A: per-(user, 1-minute window) counts -> output/metrics/ -----
     metrics = (
         parsed.groupBy(window(col("event_time"), WINDOW_DURATION), col("user"))
         .agg(*event_count_exprs())
@@ -132,40 +134,39 @@ def main():
         )
     )
 
-    # Triggers bound the file-creation rate. Without them the default
-    # (process-as-fast-as-possible) writes a part file every micro-batch
-    # - sub-second under input - which is what produced the 100k+ tiny
-    # files. Metrics feeds the live dashboard (2-min freshness window) so
-    # 30 s keeps the dot fresh; events only feed the 5-min batch, so 60 s
-    # is plenty and halves their file count.
+    # Triggers bound the file-creation rate (without them every micro-batch writes
+    # a part file - that produced 100k+ tiny files). 30s keeps the live dashboard
+    # dot fresh; the events archive only feeds the 5-min batch, so 60s is plenty
+    # and halves its file count.
     metrics_query = (
         metrics.writeStream
         .format("parquet")
         .option("path", METRICS_PATH)
         .option("checkpointLocation", METRICS_CHECKPOINT)
         .outputMode("append")
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime="30 seconds")   # tune: metrics write cadence
         .start()
     )
 
+    # ----- Query B: raw parsed events -> output/events/ -----
     events_query = (
         parsed.writeStream
         .format("parquet")
         .option("path", EVENTS_PATH)
         .option("checkpointLocation", EVENTS_CHECKPOINT)
         .outputMode("append")
-        .trigger(processingTime="60 seconds")
+        .trigger(processingTime="60 seconds")   # tune: archive write cadence
         .start()
     )
 
+    # ----- Run loop -----
     queries = [metrics_query, events_query]
     try:
-        # Liveness poll instead of a bare awaitAnyTermination() that
-        # blocks forever. If a query fails - or the Spark RPC dies on a
-        # host sleep, leaving the JVM up but unresponsive - the next poll
-        # flips isActive or raises across the Py4J bridge, so this process
-        # EXITS and the outer restart loop respawns a clean interpreter
-        # instead of lingering as a zombie that produces nothing.
+        # Poll instead of awaitAnyTermination(): if a query fails - or the Spark
+        # RPC dies on a host sleep, leaving the JVM up but unresponsive - the next
+        # poll flips isActive or raises across Py4J, so this process EXITS and the
+        # outer restart loop respawns a clean interpreter rather than lingering as
+        # a zombie that produces nothing.
         while all(q.isActive for q in queries):
             time.sleep(10)
         for q in queries:

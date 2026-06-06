@@ -23,6 +23,31 @@
 
 \begin{document}
 
+\documentclass[conference]{IEEEtran}
+
+% -
+% KeySpark project paper.
+%
+% Compile:  latexmk -pdf main.tex      (or upload this folder to Overleaf,
+%           which ships IEEEtran.cls and all packages used below).
+%
+% Items still to fill before submission are tagged  % TODO(data-freeze)
+% (final dataset size + liveness metrics) and  % TODO(figure)  (screenshots).
+% Verify EVERY reference in references.bib against the real paper.
+% -
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+\begin{document}
+
 \title{KeySpark: A Real-Time Stream-Processing Pipeline for\\
 Keyboard and Mouse Events with Input-Automation Detection}
 
@@ -583,7 +608,9 @@ pipeline sustains hundreds of thousands of events per second while
 preserving user privacy by never storing typed content.
 
 % ===========================================================================
-\bibliographystyle{IEEEtran}
 \bibliography{references}
+\bibliographystyle{IEEEtran}
+
+\end{document}
 
 \end{document}
