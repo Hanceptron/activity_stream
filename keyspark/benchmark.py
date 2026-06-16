@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import logging
 import os
 import shutil
 import time
@@ -38,8 +37,6 @@ from keyspark.batch_job import (
     user_baseline,
 )
 from keyspark.streaming_job import WATERMARK, WINDOW_DURATION, event_schema
-
-log = logging.getLogger("keyspark.benchmark")
 
 # --------------------------------------------------------------------------
 # Settings
@@ -186,10 +183,6 @@ def benchmark_streaming() -> dict:
 # CLI
 # --------------------------------------------------------------------------
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     parser = argparse.ArgumentParser(
         description="KeySpark throughput/latency benchmark"
     )

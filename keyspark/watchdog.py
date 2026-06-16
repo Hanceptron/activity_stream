@@ -23,17 +23,13 @@ freshness check still runs.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import subprocess
-import sys
 import threading
 import time
 from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.request import urlopen
-
-log = logging.getLogger("keyspark.watchdog")
 
 # --------------------------------------------------------------------------
 # Settings (tmux targets match startup-tmux.sh; all overridable via env)
@@ -83,7 +79,7 @@ if _HAS_PYOBJC:
             try:
                 self._cb()
             except Exception:
-                log.exception("error in wake handler")
+                pass
 
 
 def _install_wake_observer(on_wake):
@@ -91,9 +87,6 @@ def _install_wake_observer(on_wake):
     # NSNotificationCenter drops it. pump(seconds) spins the run loop so the wake
     # notification can dispatch; on non-macOS it falls back to time.sleep.
     if not _HAS_PYOBJC:
-        log.warning(
-            "pyobjc not available; wake trigger disabled (freshness poll still active)."
-        )
         return None, time.sleep
 
     observer = _WakeObserver.alloc().initWithCallback_(on_wake)
@@ -167,7 +160,6 @@ def _restart(window: str, reason: str, cooldown: dict, now: float) -> None:
     # Restart one tmux window via respawn-pane -k (kills the wedged process tree
     # and re-runs the pane's run-with-backoff command). Best-effort.
     if now < cooldown.get(window, 0.0):
-        log.info("skip restart %s (%s): still in cooldown", window, reason)
         return
     target = f"{SESSION}:{window}"
     try:
@@ -178,14 +170,9 @@ def _restart(window: str, reason: str, cooldown: dict, now: float) -> None:
             capture_output=True,
             text=True,
         )
-        log.warning("restarted %s (%s)", target, reason)
         cooldown[window] = now + RESTART_COOLDOWN
-    except FileNotFoundError:
-        log.error("tmux not found; cannot restart %s", target)
-    except subprocess.CalledProcessError as exc:
-        log.error("restart %s failed: %s", target, (exc.stderr or "").strip())
-    except (subprocess.SubprocessError, OSError) as exc:
-        log.error("restart %s error: %s", target, exc)
+    except (subprocess.SubprocessError, OSError):
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -226,27 +213,9 @@ def _metrics_newest() -> tuple[bool, float | None]:
 # Main loop
 # --------------------------------------------------------------------------
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    log.info(
-        "watchdog up: session=%s windows=[%s,%s] api=%s check=%.0fs",
-        SESSION,
-        STREAMING_WINDOW,
-        BACKEND_WINDOW,
-        API_BASE,
-        CHECK_INTERVAL,
-    )
-
     wake = threading.Event()
 
     def on_wake() -> None:
-        log.info(
-            "wake notification; bouncing streaming+backend after %.0fs settle",
-            WAKE_SETTLE_SECONDS,
-        )
         wake.set()
 
     _observer, pump = _install_wake_observer(on_wake)
@@ -269,7 +238,6 @@ def main() -> None:
             if wake_at is not None and (now - wake_at) >= WAKE_SETTLE_SECONDS:
                 wake.clear()
                 wake_at = None
-                log.warning("post-wake bounce of streaming + backend")
                 _restart(BACKEND_WINDOW, "wake", cooldown, now)
                 _restart(STREAMING_WINDOW, "wake", cooldown, now)
                 active_since = None

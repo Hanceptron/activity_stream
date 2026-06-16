@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import subprocess
 import sys
 import threading
@@ -42,7 +41,7 @@ MOVE_MIN_INTERVAL = 0.020            # tune: min s between mouse-move events (~5
 # has emitted nothing for WATCHDOG_SILENT_SECONDS, the listener is presumed dead
 # and we exit so the outer restart loop respawns a fresh process.
 WATCHDOG_ACTIVE_SECONDS = 5.0        # tune: HID recency that counts as "user active"
-WATCHDOG_SILENT_SECONDS = 30.0       # tune: silence-while-active before presuming dead
+WATCHDOG_SILENT_SECONDS = 60.0       # tune: silence-while-active before presuming dead
 WATCHDOG_CHECK_INTERVAL = 5.0        # tune: watchdog poll interval
 
 # pyobjc is only available (and only meaningful) on macOS. Importing inside
@@ -58,11 +57,9 @@ except ImportError:
     AXIsProcessTrusted = None  # type: ignore
     NSScreen = None  # type: ignore
 
-log = logging.getLogger("keyspark.agent")
-
 
 # --------------------------------------------------------------------------
-# Sinks
+# Kafka Producer
 # --------------------------------------------------------------------------
 def _key_id(key) -> str:
     # Stable id only. Printable keys -> the character; special keys -> pynput's
@@ -75,12 +72,6 @@ def _key_id(key) -> str:
 def _stdout_sink(event: dict) -> None:
     sys.stdout.write(json.dumps(event) + "\n")
     sys.stdout.flush()
-
-
-def _on_kafka_error(err) -> None:
-    # confluent-kafka calls this from its poll thread when the broker is
-    # unreachable; without it, post-sleep socket failures vanish silently.
-    log.warning("kafka producer error: %s", err)
 
 
 def _kafka_sink():
@@ -97,7 +88,6 @@ def _kafka_sink():
         # Retry transient sends; capped low because input events are cheap to lose.
         "message.send.max.retries": 5,
         "retry.backoff.ms": 200,
-        "error_cb": _on_kafka_error,
     })
     user_key = USER_ID.encode()
 
@@ -201,13 +191,13 @@ if _HAS_PYOBJC:
             try:
                 self._on_sleep()
             except Exception:
-                log.exception("error in sleep handler")
+                pass
 
         def workspaceDidWake_(self, _notification):
             try:
                 self._on_wake()
             except Exception:
-                log.exception("error in wake handler")
+                pass
 
 
 def _install_wake_observer(on_wake, on_sleep):
@@ -216,10 +206,6 @@ def _install_wake_observer(on_wake, on_sleep):
     # NSRunLoop so pending sleep/wake notifications can fire. Falls back to
     # time.sleep on non-macOS.
     if not _HAS_PYOBJC:
-        log.warning(
-            "pyobjc not available; wake-recovery disabled. "
-            "Install pyobjc-framework-Cocoa on macOS."
-        )
         return None, time.sleep
 
     observer = _WakeObserver.alloc().initWithCallbacks_((on_wake, on_sleep))
@@ -278,22 +264,14 @@ def _record_display_size() -> None:
         Path("output/display.json").write_text(
             json.dumps({"width": int(size.width), "height": int(size.height)})
         )
-        log.info("recorded display size %dx%d", int(size.width), int(size.height))
     except Exception:
-        log.warning("could not record display size", exc_info=True)
+        pass
 
 
 # --------------------------------------------------------------------------
 # Main loop
 # --------------------------------------------------------------------------
 def main() -> None:
-    # Logging to stderr so it never corrupts the JSON event stream on stdout.
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
     parser = argparse.ArgumentParser(description="KeySpark input capture agent")
     parser.add_argument("--sink", choices=("stdout", "kafka"), default="stdout")
     args = parser.parse_args()
@@ -320,24 +298,8 @@ def main() -> None:
         events_seen = True
         raw_send(event)
 
-    # Warn loudly when the OS reports no Accessibility permission - the most common
-    # reason the agent sits silent. (Not the watchdog gate: Input Monitoring alone
-    # is usually enough for pynput's mouse tap.)
-    if AXIsProcessTrusted is not None and not bool(AXIsProcessTrusted()):
-        log.warning(
-            "macOS Accessibility not granted to this process - pynput "
-            "may not capture keyboard events. Grant Accessibility (and "
-            "Input Monitoring) to whichever terminal launched this "
-            "agent, then fully quit and relaunch the terminal."
-        )
-
     supervisor = _ListenerSupervisor(send)
     supervisor.start()
-    log.info(
-        "agent listening (sink=%s user=%s) - waiting for input events",
-        args.sink,
-        USER_ID,
-    )
 
     # Cross-thread "exit cleanly" flag, set from the wake handler (runs on the main
     # thread inside the pump) and the watchdog below. The main loop tests it each
@@ -345,15 +307,13 @@ def main() -> None:
     exit_requested = threading.Event()
 
     def on_sleep() -> None:
-        log.info("sleep notification received; flushing kafka before the socket dies")
         if flush is not None:
             try:
                 flush()
             except Exception:
-                log.exception("kafka flush before sleep failed")
+                pass
 
     def on_wake() -> None:
-        log.info("wake notification received; exiting for fresh respawn")
         exit_requested.set()
 
     _observer, pump = _install_wake_observer(on_wake, on_sleep)
@@ -378,12 +338,6 @@ def main() -> None:
                 continue
             silent_for = now - last_event_ts
             if idle < WATCHDOG_ACTIVE_SECONDS and silent_for > WATCHDOG_SILENT_SECONDS:
-                log.error(
-                    "watchdog: HID idle=%.1fs but no events for %.1fs - "
-                    "listener presumed dead, exiting for fresh respawn",
-                    idle,
-                    silent_for,
-                )
                 exit_requested.set()
     except KeyboardInterrupt:
         pass

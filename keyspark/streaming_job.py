@@ -9,7 +9,6 @@ output/checkpoint/metrics when the metrics column set changes - delete that dir
 before restart. The events checkpoint is unaffected.
 """
 
-import logging
 import time
 
 from pyspark.sql import SparkSession
@@ -27,8 +26,6 @@ from pyspark.sql.types import (
 )
 
 from keyspark.aggregations import event_count_exprs
-
-log = logging.getLogger("keyspark.streaming_job")
 
 # --------------------------------------------------------------------------
 # Settings
@@ -88,10 +85,6 @@ def event_schema():
 # Pipeline
 # --------------------------------------------------------------------------
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     spark = build_session()
     spark.sparkContext.setLogLevel("WARN")
 
@@ -169,17 +162,12 @@ def main():
         # a zombie that produces nothing.
         while all(q.isActive for q in queries):
             time.sleep(10)
-        for q in queries:
-            exc = q.exception() if not q.isActive else None
-            if exc is not None:
-                log.error("streaming query failed: %s", exc)
-        log.warning("a streaming query is no longer active; exiting for respawn")
     finally:
         for q in queries:
             try:
                 q.stop()
             except Exception:
-                log.exception("error stopping streaming query")
+                pass
         spark.stop()
 
 

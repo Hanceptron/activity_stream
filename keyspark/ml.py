@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,8 +42,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 
 from keyspark import botgen
-
-log = logging.getLogger("keyspark.ml")
 
 # --------------------------------------------------------------------------
 # Settings
@@ -263,7 +260,6 @@ def train() -> dict:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     joblib.dump({"model": model, "features": FEATURES}, MODEL_PATH)
     counts = df["label"].value_counts().to_dict()
-    log.info("trained on %d windows; saved model to %s", len(df), MODEL_PATH)
     return {
         "model_path": str(MODEL_PATH),
         "n_samples": int(len(df)),
@@ -311,7 +307,6 @@ def evaluate() -> EvalReport:
     )
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     METRICS_PATH.write_text(json.dumps(asdict(report), indent=2))
-    log.info("saved metrics to %s", METRICS_PATH)
     return report
 
 
@@ -323,7 +318,6 @@ def _score_windows() -> pd.DataFrame:
     Empty if no model or no events.
     """
     if not MODEL_PATH.exists():
-        log.info("no model at %s; run `train` first", MODEL_PATH)
         return pd.DataFrame(columns=["user", "window_start", "nonhuman_proba"])
     bundle = joblib.load(MODEL_PATH)
     feats = _window_features(_load_events())
@@ -372,7 +366,6 @@ def write_liveness() -> int:
     """
     days = score_days()
     days.to_parquet(LIVENESS_PATH, index=False)
-    log.info("wrote %d (user, day) liveness rows to %s", len(days), LIVENESS_PATH)
     return len(days)
 
 
@@ -398,10 +391,6 @@ def _format_report(r: EvalReport) -> str:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     parser = argparse.ArgumentParser(description="KeySpark liveness classifier")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("train", help="fit on all windows and persist the model")

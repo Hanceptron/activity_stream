@@ -6,7 +6,6 @@ calendar drill-down, and one spatial heatmap per preset range under
 output/heatmaps/{1h,6h,1d,3d,1w}/. Overwrites its output dirs each run.
 """
 
-import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,8 +13,6 @@ from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
 from keyspark.aggregations import event_count_exprs
-
-log = logging.getLogger("keyspark.batch_job")
 
 # --------------------------------------------------------------------------
 # Settings
@@ -86,13 +83,6 @@ def _conforming_event_files():
             good.append(str(path))
         else:
             skipped.append(path.name)
-    if skipped:
-        shown = ", ".join(skipped[:5]) + (" ..." if len(skipped) > 5 else "")
-        log.warning(
-            "skipping %d non-conforming event file(s) (x/y/dx/dy must be int64): %s",
-            len(skipped),
-            shown,
-        )
     return good
 
 
@@ -243,14 +233,10 @@ def compute_all(spark):
     summaries, the per-user baseline, the flattened per-window table, per-day
     rollups, and a heatmap per preset range, overwriting the output dirs. Safe to
     call repeatedly on a long-lived session (the unpersist() calls matter for the
-    scheduled case). Returns early with a warning when output/events/ is missing
-    or has no conforming files.
+    scheduled case). Returns early when output/events/ is missing or has no
+    conforming files.
     """
     if not Path(EVENTS_PATH).exists():
-        log.warning(
-            "event archive at %s does not exist yet; skipping batch run",
-            EVENTS_PATH,
-        )
         return
 
     # Read the part files directly (explicit list), not the directory root:
@@ -261,10 +247,6 @@ def compute_all(spark):
     # file whose x/y/dx/dy are not int64 (would crash the vectorized reader).
     event_files = _conforming_event_files()
     if not event_files:
-        log.warning(
-            "event archive at %s has no conforming parquet files yet; skipping batch run",
-            EVENTS_PATH,
-        )
         return
     events = spark.read.parquet(*event_files).cache()
     try:

@@ -11,7 +11,6 @@ respawn a fresh JVM) when the Spark RPC is actually dead.
 """
 
 import json
-import logging
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -26,8 +25,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from keyspark.batch_job import CELL_SIZE, build_session, compute_all
-
-log = logging.getLogger("keyspark.api")
 
 # --------------------------------------------------------------------------
 # Settings
@@ -115,7 +112,7 @@ def _run_batch(spark) -> None:
 
             write_liveness()
         except Exception:
-            log.exception("liveness scoring failed; serving previous flags")
+            pass
         with batch_state_lock:
             batch_state.last_status = "ok"
             batch_state.last_error = None
@@ -129,15 +126,10 @@ def _run_batch(spark) -> None:
         if _spark_alive(spark):
             # Data/transient error: keep the session + last-good parquet, retry
             # next tick. Do NOT exit - the API stays up.
-            log.exception(
-                "batch run failed; Spark still alive - keeping session, "
-                "serving last-good parquet, will retry next tick"
-            )
             return
         # Spark session is dead: hard-exit so the bash loop respawns a fresh JVM.
         # os._exit bypasses uvicorn/APScheduler/asyncio teardown intentionally -
         # anything touching the dead RPC would hang.
-        log.error("batch run failed and Spark session is dead - exiting for fresh respawn")
         os._exit(1)
 
 
@@ -160,9 +152,6 @@ async def lifespan(app: FastAPI):
             spark = build_session()
             spark.sparkContext.setLogLevel("WARN")
         except Exception:
-            log.exception(
-                "Spark session build failed; batch disabled, still serving existing parquet"
-            )
             return
         if runtime["stopping"]:
             spark.stop()
