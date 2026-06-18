@@ -53,8 +53,7 @@ frontend) is local.
 | `keyspark/batch_job.py` | Spark batch: sessions, per-user baseline, per-day rollups, spatial heatmaps |
 | `keyspark/aggregations.py` | Shared per-window count expressions (single source of truth) |
 | `keyspark/ml.py` | Liveness classifier: human vs input automation, scores `output/liveness.parquet` |
-| `keyspark/botgen.py` | Synthetic bot event generator (non-human training class + demo injector) |
-| `keyspark/benchmark.py` | Throughput / latency benchmark (batch + streaming) |
+| `keyspark/botgen.py` | Synthetic bot event generator (non-human training class) |
 | `keyspark/watchdog.py` | Self-heal supervisor: bounces wedged streaming/batch panes after sleep/wake |
 | `keyspark/api.py` | FastAPI server exposing parquet as JSON; owns the in-process batch + liveness scheduler |
 | `frontend/` | Vite + React + Tailwind dashboard (polling-based, no WebSocket) |
@@ -185,21 +184,11 @@ its windows score >= 0.8, and the dashboard calendar colors that day red.
 uv run python -m keyspark.ml train      # fit + persist the model
 uv run python -m keyspark.ml evaluate   # stratified hold-out metrics -> metrics.json
 uv run python -m keyspark.ml score      # write output/liveness.parquet
-uv run python -m keyspark.botgen demo --kind jiggler --duration 180  # inject a demo bot into Kafka
 ```
 
 The non-human class is synthetic, so the held-out scores partly reflect separating
 real data from our own generator; validating against real captured automation is
 future work.
-
-## Benchmark
-
-```sh
-uv run python -m keyspark.benchmark batch       # batch analytical throughput (events/s)
-uv run python -m keyspark.benchmark streaming   # streaming throughput (rows/s) + micro-batch latency
-```
-
-Both read only `output/events/` and write nothing into the live outputs.
 
 ## API
 

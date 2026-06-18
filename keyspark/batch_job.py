@@ -61,8 +61,7 @@ def _conforming_event_files():
     the streaming sink). A file with float/double coords (e.g. a pandas frame
     seeded with null coords via a plain to_parquet) makes Spark's vectorized
     reader raise PARQUET_COLUMN_DATA_TYPE_MISMATCH and crash-loop the batch, so
-    it is skipped with a warning instead. Cheap: reads only parquet footers. Seed
-    synthetic data via keyspark.botgen.write_events_parquet so it conforms.
+    it is skipped instead. Cheap: reads only parquet footers.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq

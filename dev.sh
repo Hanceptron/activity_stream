@@ -33,7 +33,7 @@ trap cleanup INT TERM
 cd "$ROOT"
 
 echo "[backend]  http://localhost:8000   (FastAPI, auto-restart with backoff)"
-"$ROOT/run-with-backoff.sh" uv run uvicorn keyspark.api:app --reload &
+"$ROOT/run-with-backoff.sh" uv run uvicorn keyspark.api:app &
 BACKEND_PID=$!
 
 echo "[frontend] http://localhost:5173   (Vite)"

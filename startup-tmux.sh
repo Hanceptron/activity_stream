@@ -91,7 +91,7 @@ tmux new-window -t keyspark -n streaming \
   "$ROOT/run-with-backoff.sh uv run python -m keyspark.streaming_job"
 
 tmux new-window -t keyspark -n backend \
-  "$ROOT/run-with-backoff.sh uv run uvicorn keyspark.api:app --reload"
+  "$ROOT/run-with-backoff.sh uv run uvicorn keyspark.api:app"
 
 tmux new-window -t keyspark -n frontend \
   "cd $ROOT/frontend && npm run dev"

@@ -1,7 +1,7 @@
 """Synthetic input-automation (bot) event generator: the non-human class for the
-liveness classifier, plus a live-demo injector. Emits raw events in the same JSON
-shape the capture agent produces, so keyspark.ml featurizes them exactly like
-real events (no train/serve skew).
+liveness classifier. Emits raw events in the same JSON shape the capture agent
+produces, so keyspark.ml featurizes them exactly like real events (no
+train/serve skew).
 
 Four bot kinds, each robotic in one modality:
   - jiggler    : small mouse nudge tracing a FIXED pattern (diagonal / horizontal
@@ -17,28 +17,17 @@ non-character key. The one thing they randomize is timing. So we keep the TIMING
 jittered (per-session cadence, jitter, occasional pauses) plus a little
 cross-modal contamination, so the task is not a trivial if-statement; the signal
 left to learn is the residual GEOMETRY regularity (low step_cv, low key_diversity).
-
-macOS drops software-injected HID events, so a software bot never reaches the
-capture agent - the demo path injects straight into Kafka instead.
-
-  uv run python -m keyspark.botgen demo --kind jiggler --duration 60
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import random
-import time
 
 # --------------------------------------------------------------------------
 # Settings
 # --------------------------------------------------------------------------
 KINDS = ("jiggler", "typer", "keep_awake", "clicker")
 DEFAULT_USER = "user-001"
-KAFKA_BOOTSTRAP = "localhost:9092"   # tune: Kafka broker for the demo injector
-KAFKA_TOPIC = "events.raw"
-EVENTS_PATH = "output/events"
 
 # Per-session base inter-event interval (s) per kind, so different sessions have
 # different cadences. The jiggler/keep_awake bands are slow on purpose (real
@@ -154,139 +143,3 @@ def synthetic_event_frame(sessions_per_kind: int = 4, minutes_per_session: int =
             ts = evs[-1]["ts"] + 3600.0  # 1h gap so sessions stay distinct
             s += 1
     return pd.DataFrame(rows)
-
-
-# --------------------------------------------------------------------------
-# Parquet I/O (seed conforming files into output/events/)
-# --------------------------------------------------------------------------
-def events_arrow_schema():
-    """The exact on-disk schema of the streaming event archive (output/events/),
-    matching streaming_job.py's parsed projection. x/y/dx/dy are int64 (Spark
-    LongType, nullable): keyboard events have null coords, and the batch reader
-    requires int64 here - a plain pandas to_parquet would write float64/double and
-    make Spark raise PARQUET_COLUMN_DATA_TYPE_MISMATCH.
-    """
-    import pyarrow as pa
-
-    return pa.schema([
-        ("type", pa.string()),
-        ("key", pa.string()),
-        ("x", pa.int64()),
-        ("y", pa.int64()),
-        ("button", pa.string()),
-        ("pressed", pa.bool_()),
-        ("dx", pa.int64()),
-        ("dy", pa.int64()),
-        ("user", pa.string()),
-        ("ts", pa.float64()),
-        ("event_time", pa.timestamp("ns")),
-    ])
-
-
-def write_events_parquet(events, path: str) -> int:
-    """Write synthetic ``events`` (list of dicts or DataFrame) to ``path`` with the
-    exact streaming-sink schema, so the batch read accepts them like real events.
-    Coerces every column (crucially x/y/dx/dy to nullable int64) and writes
-    event_time as INT96. Returns the row count.
-    """
-    import pandas as pd
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    df = events if isinstance(events, pd.DataFrame) else pd.DataFrame(events)
-    if "event_time" not in df.columns:
-        df = df.assign(event_time=pd.to_datetime(df["ts"], unit="s"))
-
-    schema = events_arrow_schema()
-    arrays = []
-    for field in schema:
-        col = df[field.name] if field.name in df.columns else [None] * len(df)
-        # from_pandas=True maps NaN/None to typed null, so missing optional columns
-        # (key on a mouse event, dx/dy when no scroll) and null coords become typed
-        # nulls rather than floats.
-        arrays.append(pa.array(col, type=field.type, from_pandas=True))
-    # INT96 timestamps: Spark's vectorized reader cannot read INT64-nanosecond
-    # timestamps (a plain pyarrow timestamp("ns") write), and the batch read would
-    # raise PARQUET_COLUMN_DATA_TYPE_MISMATCH. INT96 is what Spark itself writes,
-    # so a seeded file reads back like a captured one.
-    pq.write_table(pa.Table.from_arrays(arrays, schema=schema), path,
-                   use_deprecated_int96_timestamps=True)
-    return len(df)
-
-
-# --------------------------------------------------------------------------
-# Demo (inject to Kafka) + seed (write a backdated day)
-# --------------------------------------------------------------------------
-def _demo(kind: str, duration: float, rate: float, user: str) -> None:
-    """Inject ~``rate`` events/sec of bot ``kind`` for ``duration`` seconds into
-    Kafka, timestamped at wall-clock now so the streaming watermark accepts them.
-    """
-    from confluent_kafka import Producer
-
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
-    rng = random.Random(0)
-    interval = 1.0 / rate
-    state = {"x": _ANCHOR[0], "y": _ANCHOR[1]}
-    end = time.time() + duration
-    sent = 0
-    while time.time() < end:
-        ev = _next_event(kind, state, user, time.time(), rng)
-        producer.produce(KAFKA_TOPIC, key=user.encode(), value=json.dumps(ev).encode())
-        producer.poll(0)
-        sent += 1
-        time.sleep(interval * (1.0 + rng.uniform(-0.3, 0.3)))
-    producer.flush(5)
-    print(f"injected {sent} '{kind}' events as user={user} into {KAFKA_TOPIC}")
-
-
-def _seed(kind: str, day: str, user: str, minutes: float, seed: int) -> None:
-    """Write a conforming synthetic-event parquet file into output/events/ for one
-    backdated calendar day, so the batch + liveness demo show a flagged day without
-    using the live Kafka path.
-    """
-    import datetime as dt
-    import os
-
-    # Local noon of the target day, so every event lands inside that day.
-    start = dt.datetime.strptime(day, "%Y-%m-%d").replace(hour=12)
-    base = sum(_BASE_RANGE[kind]) / 2
-    count = int(minutes * 60 / base)
-    events = synthetic_events(kind, count, user=user, start_ts=start.timestamp(),
-                              seed=seed, base=base)
-    os.makedirs(EVENTS_PATH, exist_ok=True)
-    out = os.path.join(EVENTS_PATH, f"part-{user}-{day.replace('-', '')}.parquet")
-    n = write_events_parquet(events, out)
-    print(f"wrote {n} '{kind}' events for {user} on {day} -> {out}")
-
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
-def main() -> None:
-    parser = argparse.ArgumentParser(description="KeySpark synthetic bot event generator")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    d = sub.add_parser("demo", help="inject synthetic bot events into Kafka events.raw")
-    d.add_argument("--kind", choices=KINDS, default="jiggler")
-    d.add_argument("--duration", type=float, default=180.0,
-                   help="seconds (>= ~120 so it spans the 2 windows a day flag needs)")
-    d.add_argument("--rate", type=float, default=20.0, help="events per second")
-    d.add_argument("--user", default=DEFAULT_USER)
-
-    s = sub.add_parser("seed",
-                       help="write a conforming synthetic bot day into output/events/")
-    s.add_argument("--kind", choices=KINDS, default="typer")
-    s.add_argument("--day", required=True, help="calendar day YYYY-MM-DD")
-    s.add_argument("--user", default="keyspark-bot")
-    s.add_argument("--minutes", type=float, default=30.0,
-                   help="minutes of synthetic activity (a few or more so the day flags)")
-    s.add_argument("--seed", type=int, default=0)
-
-    args = parser.parse_args()
-    if args.cmd == "demo":
-        _demo(args.kind, args.duration, args.rate, args.user)
-    elif args.cmd == "seed":
-        _seed(args.kind, args.day, args.user, args.minutes, args.seed)
-
-
-if __name__ == "__main__":
-    main()
